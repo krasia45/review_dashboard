@@ -8,9 +8,11 @@ stats : 전체 통계 요약 출력 (감정 점수 분포 포함, 표 형태)
 import math
 from . import ui
 from .utils import sentiment_grade, SENTIMENT_GRADES
+from .aspects import ASPECTS, aspects_from_json, aspect_score, average_aspect_scores
 
 STARS = {5: "★★★★★", 4: "★★★★☆", 3: "★★★☆☆", 2: "★★☆☆☆", 1: "★☆☆☆☆", None: "☆☆☆☆☆"}
 SENT_LABEL = {"positive": "긍정", "negative": "부정", "neutral": "중립"}
+ASPECT_VALUE_LABEL = {"positive": "긍정", "negative": "부정", "neutral": "보통", "not_mentioned": "언급 없음"}
 
 
 def list_reviews(db, config=None, sentiment=None, rating=None, rating_min=None, rating_max=None,
@@ -31,7 +33,7 @@ def list_reviews(db, config=None, sentiment=None, rating=None, rating_min=None, 
         stars = STARS.get(r["rating"], STARS[None])
         if r["sentiment"]:
             grade = sentiment_grade(r["sentiment"], r["confidence"], threshold)
-            sent = f"{SENT_LABEL[r['sentiment']]} {grade['score']}/5"
+            sent = f"{SENT_LABEL[r['sentiment']]} {grade['score']}/3"
         else:
             sent = "미분석"
         rows_out.append([r["id"], r["product"] or "-", r["review_text"], stars,
@@ -61,8 +63,16 @@ def show_review(db, review_id, config=None):
     if row["sentiment"]:
         grade = sentiment_grade(row["sentiment"], row["confidence"], threshold)
         print(f"  감정분류 : {SENT_LABEL[row['sentiment']]} (신뢰도 {row['confidence']} — 이 판단이 맞다고 확신하는 정도)")
-        print(f"  감정점수 : {grade['score']}/5 ({grade['label']}) — 감정이 얼마나 강한지의 정도")
+        print(f"  감정점수 : {grade['score']}/3 ({grade['label']}) — 긍정/중립/부정을 3단계 점수로 나타낸 값")
         print(f"  분석시각 : {row['analyzed_at']}")
+        aspects = aspects_from_json(row["aspect_json"] if "aspect_json" in row.keys() else None)
+        aspect_rows = []
+        for a in ASPECTS:
+            val = aspects.get(a["id"], "not_mentioned")
+            score = aspect_score(val)
+            aspect_rows.append([a["label"], ASPECT_VALUE_LABEL.get(val, val), f"{score}/5" if score else "-"])
+        print("\n  측면별 만족도 [사용자 요청 추가: 배송/상품/응대]")
+        ui.table(["측면", "판정", "5점 만점"], aspect_rows)
     else:
         ui.warn("아직 분석되지 않았습니다. (analyze 커맨드를 실행하세요)")
     print()
@@ -99,7 +109,7 @@ def print_stats(db, config=None):
         c = grade_counts[g["score"]]
         pct = (c / analyzed * 100) if analyzed else 0.0
         grade_rows.append([f"{g['score']}점", g["label"], f"{c}건", f"{pct:.1f}%"])
-    print("\n  감정 점수 분포 (1=아주나쁨 ~ 5=아주좋음)")
+    print("\n  감정 점수 분포 (1=부정 · 2=중립 · 3=긍정)")
     ui.table(["점수", "등급", "건수", "비율"], grade_rows)
 
     rating_rows = []
@@ -123,6 +133,22 @@ def print_stats(db, config=None):
             lang_rows.append([lang_labels.get(lang, lang), f"{c}건", f"{pct:.1f}%"])
         print("\n  언어 분포 (보너스: 다국어 지원 확인용)")
         ui.table(["언어", "건수", "비율"], lang_rows)
+
+    # [사용자 요청 추가] 배송/상품/응대 측면별 만족도, 5점 만점으로 수치화
+    all_aspects = [
+        aspects_from_json(row["aspect_json"] if "aspect_json" in row.keys() else None)
+        for row in db.get_all_clean() if row["sentiment"]
+    ]
+    if all_aspects:
+        avg_scores = average_aspect_scores(all_aspects)
+        aspect_rows = []
+        for a in ASPECTS:
+            mentioned = sum(1 for x in all_aspects if x.get(a["id"], "not_mentioned") != "not_mentioned")
+            avg = avg_scores.get(a["id"])
+            aspect_rows.append([a["label"], f"{avg:.2f}/5" if avg is not None else "-", f"{mentioned}건 언급"])
+        print("\n  측면별 만족도 (5점 만점, 언급된 리뷰만 집계)")
+        ui.table(["측면", "평균 점수", "언급 건수"], aspect_rows)
+
     print()
     s["grade_dist"] = grade_counts
     s["avg_grade"] = avg_grade

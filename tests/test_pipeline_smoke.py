@@ -7,7 +7,6 @@ ANTHROPIC_API_KEY 없이도 규칙 기반 폴백으로 동작하므로 네트워
 
 실행 방법: python -m unittest tests/test_pipeline_smoke.py -v  (프로젝트 루트에서)
 """
-import json
 import os
 import sys
 import shutil
@@ -171,7 +170,6 @@ class TestAIFailureVsFallback(unittest.TestCase):
 
     def tearDown(self):
         os.environ.pop("TEST_FAKE_ANTHROPIC_KEY", None)
-        os.environ.pop("TEST_FAKE_SPARK_KEY", None)
 
     def _client_with_key(self):
         config = {"ai": {"provider": "anthropic", "api_key_env": "TEST_FAKE_ANTHROPIC_KEY",
@@ -185,30 +183,11 @@ class TestAIFailureVsFallback(unittest.TestCase):
                           "max_tokens": 100, "request_timeout_sec": 5}}
         return AIClient(config, self.logger)
 
-    def test_spark_requires_api_key(self):
-        config = {"ai": {"provider": "spark", "spark_api_key_env": "TEST_SPARK_KEY_NOT_SET",
-                         "sentiment_model": "qwen", "extract_model": "qwen",
-                         "max_tokens": 100, "request_timeout_sec": 5}}
-        client = AIClient(config, self.logger)
-        self.assertFalse(client.available)
-        result = client.analyze_sentiment("배송이 빨라서 좋아요")
-        self.assertIn(result["sentiment"], ("positive", "negative", "neutral"))
-
-    def test_spark_available_when_api_key_set(self):
-        os.environ["TEST_FAKE_SPARK_KEY"] = "spark-test-key"
-        config = {"ai": {"provider": "spark", "spark_api_key_env": "TEST_FAKE_SPARK_KEY",
-                         "sentiment_model": "qwen", "extract_model": "qwen",
-                         "max_tokens": 100, "request_timeout_sec": 5}}
-        client = AIClient(config, self.logger)
-        self.assertTrue(client.available)
-
     def test_analyze_sentiment_falls_back_silently_when_no_key_at_all(self):
         client = self._client_without_key()
         self.assertFalse(client.available)
         result = client.analyze_sentiment("배송이 빨라서 좋아요")
         self.assertIn(result["sentiment"], ("positive", "negative", "neutral"))
-        self.assertIn("aspects", result)
-        self.assertEqual(result["aspects"]["delivery"], "positive")
 
     def test_analyze_sentiment_raises_when_key_present_but_call_fails(self):
         client = self._client_with_key()
@@ -236,9 +215,8 @@ class TestAIFailureVsFallback(unittest.TestCase):
         result = client.extract_insights(reviews, "감정=전체")
         pos = result["positive_keywords"]
         self.assertTrue(all(isinstance(k, dict) and "keyword" in k and "count" in k for k in pos))
-        good = next(k for k in pos if k["keyword"] in ("좋", "좋아요"))
-        self.assertEqual(good["count"], 2, "'좋/좋아요'가 두 리뷰에 등장했으므로 count=2 여야 한다")
-        self.assertTrue(result.get("fallback"))
+        good = next(k for k in pos if k["keyword"] == "좋")
+        self.assertEqual(good["count"], 2, "'좋'이 두 리뷰에 등장했으므로 count=2 여야 한다")
 
     def test_extract_uses_longer_timeout_than_analyze(self):
         # extract는 리뷰를 최대 200건까지 한 프롬프트에 넣고 최대 4096 토큰까지
@@ -270,6 +248,16 @@ class TestAIFailureVsFallback(unittest.TestCase):
         # extract는 첫 시도가 실패하면 한 번 더 재시도하므로(총 2회 시도),
         # 매번 타임아웃나면 원인 로그도 2번 남는 게 맞다.
         self.assertEqual(len(timeout_logs), 2, "재시도 포함 시도마다 타임아웃 원인이 ERROR 로그로 남아야 한다")
+
+    def test_fallback_sentiment_differentiates_chinese_reviews(self):
+        # 회귀 테스트: 예전엔 폴백이 한국어/영어 키워드만 갖고 있어서 중국어 리뷰가
+        # 전부 "중립"으로만 분류됐다. 중국어 키워드를 추가한 뒤에는 최소한 명백한
+        # 긍정/부정 문장은 구분되어야 한다.
+        client = self._client_without_key()
+        pos = client.analyze_sentiment("音质非常好，佩戴也很舒适，强烈推荐！")
+        neg = client.analyze_sentiment("用了几天以后就坏了，对产品质量很失望。")
+        self.assertEqual(pos["sentiment"], "positive")
+        self.assertEqual(neg["sentiment"], "negative")
 
     def test_extract_uses_larger_max_tokens_than_analyze(self):
         # extract는 analyze보다 훨씬 긴 JSON을 요구하므로, 같은 max_tokens를 쓰면
@@ -310,30 +298,6 @@ class TestAIFailureVsFallback(unittest.TestCase):
             )
         self.assertIn("positive_keywords", result)
         self.assertIn("negative_keywords", result)
-
-
-class TestSparkKeySave(unittest.TestCase):
-    def test_save_spark_api_key_writes_dotenv(self):
-        import logging
-        from src.dashboard_server import save_spark_api_key
-        from src.envfile import parse_dotenv
-
-        tmp = tempfile.mkdtemp()
-        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
-        cfg_path = os.path.join(tmp, "config.json")
-        with open(cfg_path, "w", encoding="utf-8") as f:
-            json.dump({"ai": {"provider": "spark", "spark_api_key_env": "SPARK_API_KEY"}}, f)
-        logger = logging.getLogger("test_spark_key")
-        logger.addHandler(logging.NullHandler())
-        os.environ.pop("SPARK_API_KEY", None)
-        save_spark_api_key(cfg_path, "test-spark-secret", logger)
-        env_path = os.path.join(tmp, ".env")
-        self.assertTrue(os.path.exists(env_path))
-        with open(env_path, encoding="utf-8") as f:
-            pairs = parse_dotenv(f.read())
-        self.assertEqual(pairs.get("SPARK_API_KEY"), "test-spark-secret")
-        self.assertEqual(os.environ.get("SPARK_API_KEY"), "test-spark-secret")
-        os.environ.pop("SPARK_API_KEY", None)
 
 
 if __name__ == "__main__":

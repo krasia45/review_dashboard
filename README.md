@@ -20,6 +20,7 @@
 9. [차트는 어떻게 그려지나요 (matplotlib)](#9-차트는-어떻게-그려지나요-matplotlib)
 10. [리포트 & HTML 대시보드가 만들어지는 과정](#10-리포트--html-대시보드가-만들어지는-과정)
 11. [보너스 기능 4가지 상세](#11-보너스-기능-4가지-상세)
+    - [11-1. 팀원 추가 기여: 멀티 프로바이더 / 모델 비교 / 측면 만족도](#11-1-팀원-추가-기여-멀티-프로바이더--모델-비교--측면-만족도)
 12. [자동 테스트 코드 설명](#12-자동-테스트-코드-설명)
 13. [에러가 나도 프로그램이 죽지 않는 이유](#13-에러가-나도-프로그램이-죽지-않는-이유)
 14. [과제 목표 4가지 완전 정복](#14-과제-목표-4가지-완전-정복)
@@ -81,7 +82,7 @@ pip install -r requirements.txt
 > 성공시키면 함께 해결됩니다.
 
 ```bash
-# 2) 샘플 리뷰 192건 가져오기
+# 2) 샘플 리뷰 212건 가져오기
 python main.py import --file sample_data/reviews_sample.csv
 
 # 3) 데이터 정제 (이상한 값 걸러내고 형식 통일)
@@ -121,7 +122,7 @@ python -m unittest discover -s tests -v
 | `sentiment_distribution.png` | 감정 분포 도넛 차트 |
 | `sentiment_trend.png` | 시간에 따른 감정 변화 라인 차트 |
 | `rating_sentiment_matrix.png` | 별점별 감정 분포 누적 막대 차트 |
-| `sentiment_grade.png` | 감정 점수(1\~5, 아주나쁨\~아주좋음) 분포 차트 |
+| `sentiment_grade.png` | 감정 점수(1\~3, 부정\~긍정) 분포 차트 |
 | `product_comparison.png` | 제품별 평균 별점/긍정비율 비교 |
 | `product_sentiment_breakdown.png` | 제품별 긍정/중립/부정 실제 건수 (누적 막대) |
 | `language_distribution.png` | [보너스] 언어(한/영/중)별 리뷰 수·긍정비율 |
@@ -138,7 +139,7 @@ python -m unittest discover -s tests -v
 
 ### 실행 결과 미리보기 (스크린샷)
 
-샘플 데이터(192건)로 위 과정을 실행하면 실제로 아래와 같은 결과물이 만들어집니다.
+샘플 데이터(212건)로 위 과정을 실행하면 실제로 아래와 같은 결과물이 만들어집니다.
 (`docs/screenshots/`에 미리 생성해 둔 예시 이미지이며, 직접 실행하면 `output/` 폴더에
 동일한 파일이 생성됩니다.)
 
@@ -152,7 +153,7 @@ python -m unittest discover -s tests -v
 |---|---|
 | ![감정 분포](docs/screenshots/sentiment_distribution.png) | ![시간별 감정 추이](docs/screenshots/sentiment_trend.png) |
 
-| 별점-감정 상관관계 | 감정 점수 분포 (1\~5점) |
+| 별점-감정 상관관계 | 감정 점수 분포 (1\~3점) |
 |---|---|
 | ![별점-감정 상관관계](docs/screenshots/rating_sentiment_matrix.png) | ![감정 점수 분포](docs/screenshots/sentiment_grade.png) |
 
@@ -206,7 +207,7 @@ review_dashboard/
 ├── README.md                    # 지금 읽고 있는 이 문서
 │
 ├── sample_data/
-│   └── reviews_sample.csv       # 샘플 리뷰 192건 (제품 12종 × 카테고리 6종, 한/영/중 혼합)
+│   └── reviews_sample.csv       # 샘플 리뷰 212건 (제품 12종 × 카테고리 6종, 한/영/중 혼합)
 │
 ├── src/                         # 실제 로직이 담긴 16개 모듈
 │   ├── __init__.py
@@ -222,6 +223,9 @@ review_dashboard/
 │   ├── exporter.py              # export 커맨드 로직
 │   ├── alerts.py                # [보너스] 감정 급증 알림
 │   ├── compare.py               # [보너스] 제품/카테고리 비교
+│   ├── aspects.py               # [팀원 기여] 측면(상품/배송/응대) 만족도 분류 + 5점 척도
+│   ├── model_runs.py            # [팀원 기여] 모델 스냅샷 저장/시드 헬퍼
+│   ├── model_display.py         # [팀원 기여] 모델 id -> 화면 표시명 정리
 │   ├── utils.py                 # 텍스트/날짜/별점 정규화, 해시, 언어감지 등 공통 함수
 │   ├── ui.py                    # [사용자 편의] 색상/표/진행률 바/프롬프트 터미널 UI 헬퍼
 │   ├── logger_setup.py          # 로깅(logging) 설정
@@ -232,11 +236,13 @@ review_dashboard/
 │
 ├── tests/                       # 자동 테스트
 │   ├── __init__.py
-│   ├── test_utils.py            # utils.py 함수 단위 테스트 5건
-│   ├── test_pipeline_smoke.py   # import→clean→analyze 통합 테스트 2건
-│   ├── test_ui.py               # [사용자 편의] 한글 표시 폭/표 정렬 테스트 6건
-│   ├── test_envfile.py          # [사용자 편의] .env 파일 파싱/로드/저장 테스트 7건
-│   └── test_main_cli.py         # [사용자 편의] CLI 통합 테스트 11건 (menu/quickstart/search/setup/-y 등)
+│   ├── test_utils.py            # utils.py 함수 단위 테스트
+│   ├── test_pipeline_smoke.py   # import→clean→analyze 통합 테스트 + 대화형 대시보드 검증
+│   ├── test_ui.py               # [사용자 편의] 한글 표시 폭/표 정렬 테스트
+│   ├── test_envfile.py          # [사용자 편의] .env 파일 파싱/로드/저장 테스트
+│   ├── test_main_cli.py         # [사용자 편의] CLI 통합 테스트 (menu/quickstart/search/setup/-y 등)
+│   ├── test_aspects_and_models.py  # [팀원 기여] 측면 만족도 + 멀티 프로바이더 + 모델 비교 테스트
+│   └── test_insights.py         # [팀원 기여] AI 추출 결과가 나중 실패로 가려지지 않는지 테스트
 │
 ├── docs/
 │   └── screenshots/             # README용 미리보기 이미지 (차트 7종 + HTML 대시보드)
@@ -290,7 +296,7 @@ python main.py import --file sample_data/reviews_sample.csv --dedup skip
 
 ```
 [INFO] 파일 로드: sample_data/reviews_sample.csv
-[INFO] 총 192건 감지, 유효 192건, 스킵 0건 (중복/필수필드 누락, 정책=skip)
+[INFO] 총 212건 감지, 유효 212건, 스킵 0건 (중복/필수필드 누락, 정책=skip)
 [INFO] raw 저장소에 저장 완료
 ```
 
@@ -322,8 +328,8 @@ python main.py clean --dedup skip
 | 중복 처리 | 정제된 텍스트 기준으로 다시 한 번 skip/upsert 적용 |
 
 ```
-[INFO] 정제 대상 원본 리뷰: 192건
-[INFO] 정제 완료: 신규 192건, 갱신 0건, 짧은 리뷰 제외 0건, 중복 스킵 0건
+[INFO] 정제 대상 원본 리뷰: 212건
+[INFO] 정제 완료: 신규 212건, 갱신 0건, 짧은 리뷰 제외 0건, 중복 스킵 0건
 ```
 
 ### 5-4. `analyze` — AI 감정 분석
@@ -339,14 +345,14 @@ AI(또는 API 키가 없으면 규칙 기반 폴백)에게 리뷰 텍스트를 �
 중단되지 않습니다.
 
 ```
-[INFO] 분석 대상: 192건
+[INFO] 분석 대상: 212건
 [INFO] [1/48] ID=1 분석 완료: neutral (0.55)
 ...
-[INFO] 분석 완료: 192건 성공, 0건 실패
+[INFO] 분석 완료: 212건 성공, 0건 실패
 ```
 
 > 💡 여기서 저장되는 `0.55` 같은 숫자는 **신뢰도(confidence)** — "이 판단이 맞다고
-> 얼마나 확신하는가"입니다. "감정이 얼마나 강한가"를 나타내는 **감정 점수(1\~5)**는
+> 얼마나 확신하는가"입니다. "감정 분류를 숫자로 나타낸" **감정 점수(1\~3)**는
 > 별개 개념이며, 7-5절에서 자세히 설명합니다.
 
 ### 5-5. `extract` — AI 키워드/요약/개선제안 추출
@@ -409,7 +415,7 @@ python main.py search "배송 지연"
 python main.py show --id 37
 ```
 
-원문, 별점, 제품/카테고리, 언어, **감정분류(신뢰도 포함) + 감정 점수(1\~5)**까지 한 번에
+원문, 별점, 제품/카테고리, 언어, **감정분류(신뢰도 포함) + 감정 점수(1\~3)**까지 한 번에
 보여줍니다.
 
 ```
@@ -423,7 +429,7 @@ python main.py show --id 37
 python main.py stats
 ```
 
-총 리뷰 수, 분석 완료율, 감정별 비율, **감정 점수(1\~5) 분포**, 별점 분포, 평균 별점,
+총 리뷰 수, 분석 완료율, 감정별 비율, **감정 점수(1\~3) 분포**, 별점 분포, 평균 별점,
 평균 감정 점수, 평균 신뢰도, 그리고 **언어 분포(보너스: 다국어 지원 확인용)**까지
 출력합니다.
 
@@ -454,7 +460,7 @@ python main.py export --format jsonl --category 생활가전
 
 `csv`/`jsonl`/`xlsx` 3가지 포맷을 모두 지원하며(요구사항은 최소 2개), `--sentiment`,
 `--rating-min`, `--category`로 필터링할 수 있습니다. 내보내기 파일에는 `sentiment`,
-`confidence`뿐 아니라 **`sentiment_score`(1\~5)/`sentiment_grade`(아주나쁨\~아주좋음)**
+`confidence`뿐 아니라 **`sentiment_score`(1\~3)/`sentiment_grade`(부정\~긍정)**
 컬럼도 함께 포함됩니다.
 
 ### 5-12. `alert` — [보너스] 감정 급증 알림
@@ -569,8 +575,8 @@ system = (
 "message":"Your credit balance is too low to access the Anthropic API. ..."}}
 [ERROR] [1/100] ID=1 분석 실패: AI 감정분석 API 호출에 실패했습니다 (...)
 ...
-[INFO] 분석 완료: 0건 성공, 192건 실패
-⚠ 분석 완료: 0건 성공, 192건 실패 (logs/app.log 확인)
+[INFO] 분석 완료: 0건 성공, 212건 실패
+⚠ 분석 완료: 0건 성공, 212건 실패 (logs/app.log 확인)
 ```
 
 > 💡 **"API 키를 넣었는데 결과가 여전히 폴백 같아요"** 싶다면, 콘솔에 위와 같은
@@ -608,7 +614,7 @@ system = (
 ```
 
 **응답 길이를 늘리고 나니, 이번엔 타임아웃이 새로 발생할 수 있습니다.** 리뷰
-192건을 한 프롬프트에 담고 최대 4096 토큰까지 생성하게 하면, 모델이 답을 다
+212건을 한 프롬프트에 담고 최대 4096 토큰까지 생성하게 하면, 모델이 답을 다
 만드는 데 `analyze`(리뷰 1건, 응답 몇십 토큰)보다 훨씬 오래 걸립니다. 이것도
 같은 이유로 `ai.request_timeout_sec`(analyze용, 기본 30초)와
 `ai.extract_timeout_sec`(extract 전용, 기본 120초)를 분리했습니다.
@@ -623,7 +629,7 @@ system = (
 > 중간에 뚝 끊겨 있다면 응답 잘림이 원인이니 `extract_max_tokens`를 더 늘려보시고,
 > 그게 아니라 `status=4xx` 에러라면 7-3절(크레딧/인증 문제)을 참고하세요.
 
-### 7-5. 신뢰도(confidence) vs 감정 점수(1\~5) — 헷갈리기 쉬운 두 개념
+### 7-5. 신뢰도(confidence) vs 감정 점수(1\~3) — 헷갈리기 쉬운 두 개념
 
 과제 문제기술의 "감정(긍정/부정/중립)과 신뢰도 점수(0.0\~1.0)"라는 문구를 "감정이 얼마나
 강한지의 점수"로 오해하기 쉬운데, 사실 이 둘은 다른 개념입니다.
@@ -631,24 +637,31 @@ system = (
 | 개념 | 값 | 의미 | 예시 |
 |---|---|---|---|
 | **신뢰도 (confidence)** | 0.0\~1.0 | AI가 자기 판단을 얼마나 **확신**하는가 | "이 리뷰가 부정이라고 91% 확신함" |
-| **감정 점수 (sentiment score)** | 1\~5 | 감정이 얼마나 **강한가** (아주나쁨\~아주좋음) | "이 리뷰는 5점 만점에 1점(아주 나쁨)" |
+| **감정 점수 (sentiment score)** | 1\~3 | 감정 분류를 그대로 숫자로 나타낸 값 (부정/중립/긍정) | "이 리뷰는 3점 만점에 3점(긍정)" |
 
 이 프로젝트는 과제 스펙이 명시한 신뢰도(confidence)를 그대로 저장하면서, **추가로**
-`sentiment`(3분류) + `confidence`를 조합해 5단계 감정 점수를 계산하는
-`utils.sentiment_grade()` 함수를 만들었습니다. 새로 AI를 호출하지 않고 이미 저장된
-값으로 즉석 계산하므로 비용이 들지 않습니다.
+`sentiment`(3분류)를 숫자 점수로도 바로 쓸 수 있게 `utils.sentiment_grade()` 함수를
+만들었습니다. 새로 AI를 호출하지 않고 이미 저장된 값으로 즉석 계산하므로 비용이
+들지 않습니다.
 
 ```python
 # src/utils.py
-def sentiment_grade(sentiment, confidence, strong_threshold=0.75):
-    # neutral            -> 3점 (보통)
-    # positive + conf>=0.75 -> 5점 (아주 좋음) / conf<0.75 -> 4점 (좋음)
-    # negative + conf>=0.75 -> 1점 (아주 나쁨) / conf<0.75 -> 2점 (나쁨)
+def sentiment_grade(sentiment, confidence=None, strong_threshold=0.75):
+    # positive -> 3점 (긍정)
+    # neutral  -> 2점 (중립)
+    # negative -> 1점 (부정)
 ```
 
-`strong_threshold`(기본 0.75)는 `config.json`의 `sentiment_grade.strong_threshold`에서
-조정할 수 있습니다. 이 감정 점수는 `show`/`list`/`stats`/`export`/`dashboard` 전체에
-반영되어 있고, 전용 차트(`sentiment_grade.png`)도 생성됩니다.
+> 💡 처음엔 신뢰도까지 반영해서 "아주나쁨\~아주좋음" 5단계로 세분화했었는데, 실제
+> 기업 대시보드(NPS/CSAT 계열)에서 감정 점수는 보통 이렇게 단순하게 3단계(부정/중립/
+> 긍정)로 보여주는 경우가 많아서 이 방식으로 바꿨습니다. `confidence`(신뢰도) 정보는
+> 사라지지 않고 품질 지표의 "평균 신뢰도"로 별도로 계속 보여줍니다 — 두 개념이 아예
+> 다르다는 걸 명확히 하려고 의도적으로 분리해뒀습니다.
+
+`confidence`/`strong_threshold` 인자는 이전 버전과의 호환을 위해 남겨뒀지만, 3단계로
+단순화하면서 점수 계산에는 더 이상 쓰이지 않습니다. 이 감정 점수는 `show`/`list`/
+`stats`/`export`/`dashboard` 전체에 반영되어 있고, 전용 차트(`sentiment_grade.png`)도
+생성됩니다.
 
 ---
 
@@ -722,7 +735,7 @@ matplotlib 기본 폰트는 한글을 지원하지 않아서, 아무 설정도 �
 | `sentiment_distribution.png` | 도넛 차트 (중앙 총건수 표시) | 필수 (감정 분포) |
 | `sentiment_trend.png` | 라인 차트 | 필수 (시간별 추이) |
 | `rating_sentiment_matrix.png` | 누적 막대 차트 (값 라벨 포함) | 필수 (별점-감정 상관관계) |
-| `sentiment_grade.png` | 가로 막대 (5단계, 빨강→초록 그라데이션) | 추가 구현 (감정 점수 1\~5 분포) |
+| `sentiment_grade.png` | 가로 막대 (3단계, 빨강/회색/초록) | 추가 구현 (감정 점수 1\~3 분포) |
 | `product_comparison.png` | 가로 막대 2개 (값 라벨 포함) | 보너스 (제품 비교) |
 | `product_sentiment_breakdown.png` | 누적 가로 막대 (제품별 긍정/중립/부정 실제 건수) | 추가 구현 (제품별 감정 분포 시각화) |
 | `language_distribution.png` | 가로 막대 2개 (값 라벨 포함) | 보너스 (다국어 지원 시각화) |
@@ -820,6 +833,117 @@ AI 요약을 코럴 컬러 강조선이 있는 인용구 블록으로, 불만/�
 
 ---
 
+## 11-1. 팀원 추가 기여: 멀티 프로바이더 / 모델 비교 / 측면 만족도
+
+[#11-1-팀원-추가-기여-멀티-프로바이더--모델-비교--측면-만족도](#11-1-팀원-추가-기여-멀티-프로바이더--모델-비교--측면-만족도)
+
+팀원이 별도로 작업해서 올려준 개선사항 중, 과제 제약사항과 충돌하지 않는 부분을
+선별해서 병합했습니다. 무엇을 가져오고 무엇을 왜 뺐는지 투명하게 남겨둡니다.
+
+### ⑤ 여러 AI 프로바이더 지원 (Claude / OpenAI / Gemini / 로컬 모델)
+
+`config.json`의 `ai.provider`를 바꾸면 같은 코드로 5가지 방식 중 하나를 씁니다.
+
+| provider | 설명 | 필요한 환경변수 |
+|---|---|---|
+| `anthropic` (기본값) | Anthropic Claude 공식 API | `ANTHROPIC_API_KEY` |
+| `openai` | OpenAI 공식 API | `OPENAI_API_KEY` |
+| `gemini` | Google Gemini (Generative Language API) | `GEMINI_API_KEY` |
+| `spark` | **로컬(또는 사내망)에 띄운 OpenAI 호환 서버** — 로컬 Qwen 등 모델 검증용 | `SPARK_API_KEY`, `ai.base_url`(기본 `http://127.0.0.1:8000/v1`) |
+| `fallback` | 규칙 기반만 사용 (API 호출 없음) | 불필요 |
+
+```bash
+# config.json의 ai.provider를 "spark"로 바꾸거나
+export SPARK_API_KEY=아무값
+python main.py analyze --unanalyzed   # base_url(기본 내 컴퓨터 8000번 포트)로 호출
+```
+
+> ⚠️ **보안 안전장치**: `spark_health_url`(로컬 모델 GPU 온도 조회용)의 기본값은
+> 반드시 `127.0.0.1`(내 컴퓨터)입니다. 병합 전 원본 코드에는 특정 사설 IP가
+> 기본값으로 박혀있어서, 설정을 안 건드려도 낯선 네트워크로 요청이 나갈 수 있는
+> 문제가 있었습니다 — 이 부분은 로컬 주소로 바꿔서 가져왔습니다. 다른 기기의
+> 모델을 쓰려면 `config.json`에 명시적으로 주소를 지정해야만 합니다.
+
+> 💡 **모델-엔진 매칭 안전장치**: `provider`를 바꿨는데 `sentiment_model`/
+> `extract_model`은 이전 provider 것 그대로 남아있는 실수(예: `provider=spark`인데
+> 모델 id는 `claude-haiku...`)를 프로그램 시작 시 자동으로 감지해서 경고합니다.
+
+### ⑥ 모델별 비교 (서로 다른 provider/model이 낸 결과 비교)
+
+`analyze`를 실행할 때마다 그 결과가 자동으로 "스냅샷"(`model_runs` 테이블)에
+기록됩니다. provider나 모델을 바꿔서 다시 분석하면, 두 스냅샷을 비교해 일치율과
+불일치 사례를 확인할 수 있습니다.
+
+```bash
+python main.py models                        # 저장된 스냅샷 목록
+python main.py compare-models --a 1 --b 2     # 두 스냅샷 비교
+```
+
+```
+=== 모델 비교: [1] Anthropic / claude haiku 4.5 · ...  vs  [2] ... ===
+공통 리뷰 212건 중 25건 비교
+일치율: 40.0%  (일치 10건 / 불일치 15건)
+[A] 긍정 4(40.0%) · 중립 4(40.0%) · 부정 2(20.0%)  평균신뢰도 0.65
+[B] 긍정 9(36.0%) · 중립 10(40.0%) · 부정 6(24.0%)  평균신뢰도 0.656
+[불일치 상위 10건 — 신뢰도 차이 큰 순]
+...
+```
+
+> 💡 원본 코드는 이 기능을 `python main.py serve`로 띄우는 로컬 웹서버의
+> API(`/api/compare`)로 구현했습니다. 과제 제약사항 **"실시간 웹 서버는
+> 구현하지 않는다"** 와 충돌해서, 같은 비교 로직(`db.compare_model_runs()`)을
+> 그대로 살리되 **서버 없이 CLI 커맨드로만** 노출하도록 바꿔서 가져왔습니다.
+> 웹서버 자체(`dashboard_server.py`)와 그에 딸린 실시간 UI(모델 선택 드롭다운,
+> CSV 드래그 업로드 등)는 병합하지 않았습니다.
+
+### ⑦ 측면별(배송/상품/응대) 만족도 — 5점 만점 수치화
+
+전체 감정(긍정/부정/중립) 판정과는 별개로, 리뷰마다 **상품/배송/응대** 3가지
+측면을 따로 분류하고, positive=5점·neutral=3점·negative=1점으로 환산합니다
+(언급되지 않은 측면은 평균에서 제외 — 0점 취급하면 평균이 왜곡되기 때문입니다).
+
+```bash
+python main.py show --id 1     # 리뷰 1건의 측면별 판정 확인
+python main.py stats           # 전체 평균 (5점 만점) 확인
+```
+
+`dashboard --html`의 대화형 대시보드에도 "측면별 만족도" 차트가 추가되어,
+카테고리/제품 필터를 걸면 그 조건에 맞게 다시 계산됩니다.
+
+### ⑧ [버그 수정] 성공한 AI 추출 결과가 나중에 실패로 가려지는 문제
+
+`dashboard`가 보여주는 TOP N 키워드/요약은 "가장 최근 `extract` 결과"를 가져오는데,
+예전에는 그게 **무조건 제일 마지막 실행**이었습니다. 그래서 `extract`를 성공적으로
+한 번 돌린 뒤에, 나중에 (타임아웃 등으로) 다시 돌렸다가 실패해서 규칙 기반 폴백으로
+떨어지면, **먼저 성공했던 진짜 AI 결과가 화면에서 사라지고** 폴백 결과로 덮어써져
+보이는 문제가 있었습니다. 지금은 최근 결과들을 훑어서 **성공한 AI 추출을 우선**
+보여주고, 성공한 게 하나도 없을 때만 폴백을 보여주도록 고쳤습니다
+(`tests/test_insights.py`에서 검증).
+
+### ⑨ 감정 점수 3단계로 단순화 + 디자인 리프레시
+
+- **감정 점수를 5단계(아주나쁨\~아주좋음)에서 3단계(부정/중립/긍정)로 단순화**했습니다.
+  자세한 이유는 7-5절 참고 — 신뢰도로 세분화하는 대신, 실제 기업 대시보드에서 흔히
+  쓰는 3단계 방식으로 통일했습니다.
+- **색상 팔레트를 인디고(#4F46E5) 중심으로 정리**했습니다. Stripe·Linear·Mixpanel 등
+  실제 SaaS 분석 대시보드에서 흔히 쓰는 톤(인디고 브랜드컬러 + 슬레이트 그레이 +
+  절제된 시맨틱 컬러)으로 맞췄고, matplotlib PNG와 HTML 대시보드(Chart.js)가 완전히
+  같은 팔레트를 공유합니다. 막대 차트에는 둥근 모서리를, 시간별 추이 차트에는 옅은
+  영역 채우기(area fill)를 추가해 매출/트래픽 지표 그래프에서 흔히 보는 스타일을
+  반영했습니다.
+- **샘플 데이터에 중국어 리뷰 20건을 추가**해서 다국어 리뷰가 총 32건이 됐습니다
+  (전체 212건). 폴백(규칙 기반) 분석기가 한국어/영어 키워드만 갖고 있어서 중국어
+  리뷰가 전부 "중립"으로만 분류되던 문제도 함께 발견해서, 중국어 긍정/부정 키워드를
+  추가로 넣어 폴백에서도 의미 있게 구분되도록 고쳤습니다.
+
+### CSV 업로드는요?
+
+원본 코드는 로컬 웹서버를 통한 드래그앤드롭 업로드로 구현했지만, 이건 이미
+기존 `python main.py import --file 파일.csv`가 CSV(및 Excel)를 그대로
+지원하므로 별도로 만들지 않았습니다.
+
+---
+
 ## 12. 자동 테스트 코드 설명
 
 ```bash
@@ -828,7 +952,7 @@ python -m unittest discover -s tests -v
 
 | 파일 | 테스트 내용 |
 |---|---|
-| `tests/test_utils.py` | `normalize_text`(공백 정리), `normalize_date`(여러 날짜 형식 통일), `normalize_rating`(1\~5 범위 검증, 8점처럼 범위 밖이면 `None`), `dedup_hash`(같은 리뷰는 같은 해시), `detect_language`(한/영 판별), `sentiment_grade`(신뢰도→5단계 등급) — 총 6건 |
+| `tests/test_utils.py` | `normalize_text`(공백 정리), `normalize_date`(여러 날짜 형식 통일), `normalize_rating`(1\~5 범위 검증, 8점처럼 범위 밖이면 `None`), `dedup_hash`(같은 리뷰는 같은 해시), `detect_language`(한/영/중 판별), `sentiment_grade`(감정→3단계 점수) — 총 6건 |
 | `tests/test_pipeline_smoke.py` | import→clean→analyze 통합 스모크 테스트, dedup skip 검증, **API 키 유무에 따른 폴백/실패 구분**(키 없으면 폴백, 키는 있는데 호출 실패하면 정직하게 "실패"로 처리), **대화형 HTML 대시보드**가 필터 UI·임베드된 리뷰데이터·내장 Chart.js를 포함해서 생성되는지 검증 — 총 8건 |
 | `tests/test_ui.py` | [사용자 편의] 한글(동아시아 넓은 문자) 표시 폭 계산, 표 정렬 패딩, 말줄임표 처리가 한/영 혼용 텍스트에서도 정확한지 검증 — 총 6건 |
 | `tests/test_main_cli.py` | [사용자 편의] `python main.py`를 실제로 서브프로세스 실행해서 환영 화면, 파일 자동 탐지, `quickstart`, `search`, `setup`(.env 자동 로드까지), `-y` 플래그가 서브커맨드 앞/뒤 어디에 있어도 동작하는지, `--all` 확인 프롬프트가 비대화형 환경에서 안전하게 거부되는지, **대화형 메뉴의 목록/검색 페이지 이동(n/p)**이 정상 동작하는지 검증 — 총 12건 |
@@ -914,18 +1038,18 @@ python -m unittest discover -s tests -v
 - [x] `config.json` 설정 관리 (API 키 환경변수명, dedup 정책, 시각화 옵션) + `logging`(INFO/WARNING/ERROR)
 - [x] SQLite 영구 저장 (메모리만 사용 X)
 - [x] 4개 이상 모듈 분리 (총 16개 모듈 + 테스트 5개 파일)
-- [x] 샘플 데이터 30건 이상 (192건, 제품 12종 × 카테고리 6종, 한/영/중 혼합)
+- [x] 샘플 데이터 30건 이상 (212건, 제품 12종 × 카테고리 6종, 한/영/중 혼합)
 
 **보너스 과제**
 
-- [x] ① 다국어(한/영) 감정 분석 — 언어 자동판별 + 언어별 차트/통계/필터
+- [x] ① 다국어(한/영/중) 감정 분석 — 언어 자동판별 + 언어별 차트/통계/필터
 - [x] ② 감정 변화 알림 — 최근 N일 부정비율 급증 감지 (`alert` 커맨드 + `dashboard` 자동 실행)
 - [x] ③ HTML 대시보드 — `dashboard --html` (차트 임베드 + 통계 + AI 인사이트 단일 페이지)
 - [x] ④ 제품/카테고리별 비교분석 — `compare --by product|category`
 
 **추가로 챙긴 것 (요구사항엔 없지만 품질을 위해 포함)**
 
-- [x] **감정 점수(1\~5, 아주나쁨\~아주좋음) 시스템** — 3분류+신뢰도를 조합해 강도별 등급으로
+- [x] **감정 점수(1\~3, 부정\~긍정) 시스템** — 감정 분류를 그대로 3단계 숫자 점수로
       환산 (`show`/`list`/`stats`/`export`/`dashboard` 전체 반영, 전용 차트 포함)
 - [x] **사용자 편의 기능** — 환영 화면, 대화형 메뉴(`menu`), 원클릭 파이프라인(`quickstart`),
       API 키 초기설정 마법사(`setup` + `.env` 자동 로드), 키워드 자유검색(`search`),
@@ -971,8 +1095,8 @@ A. 바로 위 `externally-managed-environment` 에러 때문에 애초에 라이
 먼저 성공시키면 함께 해결됩니다.
 
 **Q. "신뢰도"랑 "감정 점수"가 헷갈려요. 뭐가 다른가요?**
-A. 신뢰도(confidence, 0\~1)는 "AI가 이 판단을 얼마나 확신하는가"이고, 감정 점수(1\~5)는
-"감정이 얼마나 강한가(아주나쁨\~아주좋음)"입니다. 7-5절에 표로 자세히 정리해뒀습니다.
+A. 신뢰도(confidence, 0\~1)는 "AI가 이 판단을 얼마나 확신하는가"이고, 감정 점수(1\~3)는
+"감정 분류(부정/중립/긍정)를 그대로 숫자로 나타낸 값"입니다. 7-5절에 표로 자세히 정리해뒀습니다.
 
 **Q. API 키 없이 실행하면 진짜 AI가 아니라던데, 결과를 믿어도 되나요?**
 A. 폴백 결과는 "특정 단어 포함 여부"만 세는 아주 단순한 로직이라 정확도가 낮습니다.
@@ -1067,10 +1191,10 @@ python main.py
 넘길 수 있습니다.
 
 ```
-── 리뷰 목록 (감정: 전체, 1/10 페이지, 총 192건) ──
+── 리뷰 목록 (감정: 전체, 1/10 페이지, 총 212건) ──
 ...
 페이지 이동 (1/10) — n=다음, p=이전, 엔터=그만: n
-── 리뷰 목록 (감정: 전체, 2/10 페이지, 총 192건) ──
+── 리뷰 목록 (감정: 전체, 2/10 페이지, 총 212건) ──
 ```
 
 ### 17-3. `python main.py quickstart` — 원클릭 파이프라인
@@ -1090,7 +1214,7 @@ python main.py quickstart --no-html             # HTML 대시보드는 생략
 바로 다음에 뭘 실행하면 좋을지 힌트가 따라옵니다.
 
 ```
-✔ 정제 완료: 신규 192건, 갱신 0건
+✔ 정제 완료: 신규 212건, 갱신 0건
 💡 다음 단계: python main.py analyze --unanalyzed  (AI로 감정을 분석합니다)
 ```
 
@@ -1191,9 +1315,9 @@ ANTHROPIC_API_KEY 입력 (건너뛰려면 엔터): sk-ant-...
 $ python main.py import --file sample_data/reviews_sample.csv
 
 [INFO] 파일 로드: sample_data/reviews_sample.csv
-[INFO] 총 192건 감지, 유효 192건, 스킵 0건 (중복/필수필드 누락, 정책=skip)
+[INFO] 총 212건 감지, 유효 212건, 스킵 0건 (중복/필수필드 누락, 정책=skip)
 [INFO] raw 저장소에 저장 완료
-✔ 192건 가져오기 완료
+✔ 212건 가져오기 완료
 💡 다음 단계: python main.py clean  (가져온 데이터를 정제합니다)
 ```
 
@@ -1202,9 +1326,9 @@ $ python main.py import --file sample_data/reviews_sample.csv
 ```
 $ python main.py clean
 
-[INFO] 정제 대상 원본 리뷰: 192건
-[INFO] 정제 완료: 신규 192건, 갱신 0건, 짧은 리뷰 제외 0건, 중복 스킵 0건
-✔ 정제 완료: 신규 192건, 갱신 0건
+[INFO] 정제 대상 원본 리뷰: 212건
+[INFO] 정제 완료: 신규 212건, 갱신 0건, 짧은 리뷰 제외 0건, 중복 스킵 0건
+✔ 정제 완료: 신규 212건, 갱신 0건
 💡 다음 단계: python main.py analyze --unanalyzed  (AI로 감정을 분석합니다)
 ```
 
@@ -1325,10 +1449,10 @@ $ python main.py quickstart
 | `src/db.py` | SQLite 스키마 설계, raw_reviews/clean_reviews 테이블 CRUD |
 | `src/utils.py` | 텍스트·날짜·별점 정규화, 중복 판별 해시, 언어 감지 등 공통 함수 |
 | `tests/test_utils.py` | 정규화 함수 단위 테스트 6건 |
-| `sample_data/reviews_sample.csv` | 샘플 리뷰 192건(제품 12종·카테고리 6종, 제품당 16건 균등배분(기존 15건 + 중국어 리뷰 1건씩 추가)) 제작 |
+| `sample_data/reviews_sample.csv` | 샘플 리뷰 212건(제품 12종·카테고리 6종, 제품당 16건 균등배분(기존 15건 + 중국어 리뷰 1건씩 추가)) 제작 |
 
 **충족한 요구사항**: CSV/Excel 수집, raw/clean 저장소 분리, dedup(skip/upsert),
-정제 6대 규칙, SQLite 영구저장, 샘플데이터 30건 이상(192건, 제품당 16건 균등배분(기존 15건 + 중국어 리뷰 1건씩 추가))
+정제 6대 규칙, SQLite 영구저장, 샘플데이터 30건 이상(212건, 제품당 16건 균등배분(기존 15건 + 중국어 리뷰 1건씩 추가))
 
 ---
 
@@ -1347,7 +1471,7 @@ $ python main.py quickstart
 
 **충족한 요구사항**: 감정(긍정/부정/중립)+신뢰도(0.0\~1.0) 분석, 분석 대상 옵션 3종,
 API 실패 시 로깅 후 스킵, 키워드/요약/개선제안 4항목 추출, API 키 코드 미노출(환경변수
-관리), 감정 점수(1\~5) 시스템(추가 구현)
+관리), 감정 점수(1\~3) 시스템(추가 구현)
 
 ---
 

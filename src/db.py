@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS extractions (
     created_at TEXT NOT NULL
 );
 
+-- [보너스 확장] 모델별 비교: analyze를 돌릴 때마다 그 결과를 "스냅샷"으로 남겨서,
+-- 나중에 서로 다른 provider/model로 돌린 결과끼리 비교할 수 있게 한다.
 CREATE TABLE IF NOT EXISTS model_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     provider TEXT NOT NULL,
@@ -87,13 +89,16 @@ class Database:
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
-        self._migrate()
         self.conn.commit()
+        self._migrate()
 
     def _migrate(self):
+        """스키마가 먼저 생겨있던(아직 aspect_json이 없는) 기존 DB도 안전하게 최신 구조로
+        맞춰준다 (컬럼이 이미 있으면 조용히 넘어간다)."""
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(clean_reviews)").fetchall()}
         if "aspect_json" not in cols:
             self.conn.execute("ALTER TABLE clean_reviews ADD COLUMN aspect_json TEXT")
+            self.conn.commit()
 
     # ---------------- raw_reviews ----------------
     def raw_hash_exists(self, dedup_hash: str) -> bool:
@@ -212,10 +217,139 @@ class Database:
 
     def update_aspects_only(self, review_id: int, aspect_json: str):
         self.conn.execute(
-            "UPDATE clean_reviews SET aspect_json=? WHERE id=?",
-            (aspect_json, review_id),
+            "UPDATE clean_reviews SET aspect_json=? WHERE id=?", (aspect_json, review_id)
         )
         self.conn.commit()
+
+    # ---------------- [보너스 확장] 모델별 비교(model_runs) ----------------
+    def count_model_runs(self) -> int:
+        return self.conn.execute("SELECT COUNT(*) c FROM model_runs").fetchone()["c"]
+
+    def save_model_run(
+        self,
+        provider: str,
+        model: str,
+        label: str,
+        created_at: str,
+        temp_c: Optional[float] = None,
+        notes: Optional[str] = None,
+    ) -> int:
+        """현재 clean_reviews 감정 결과를 스냅샷으로 저장한다."""
+        rows = self.get_all_clean()
+        analyzed = sum(1 for r in rows if r["sentiment"])
+        cur = self.conn.execute(
+            """INSERT INTO model_runs
+               (provider, model, label, created_at, review_count, analyzed_count, temp_c, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (provider, model, label, created_at, len(rows), analyzed, temp_c, notes),
+        )
+        run_id = cur.lastrowid
+        self.conn.executemany(
+            """INSERT INTO model_run_results (run_id, review_id, sentiment, confidence)
+               VALUES (?, ?, ?, ?)""",
+            [(run_id, r["id"], r["sentiment"], r["confidence"]) for r in rows],
+        )
+        self.conn.commit()
+        return run_id
+
+    def seed_model_run_if_empty(self, provider: str, model: str, label: str, created_at: str) -> Optional[int]:
+        """model_runs 가 비어 있고 분석된 clean 리뷰가 있으면 시드 스냅샷 1개를 만든다."""
+        if self.count_model_runs() > 0:
+            return None
+        analyzed = self.conn.execute(
+            "SELECT COUNT(*) c FROM clean_reviews WHERE sentiment IS NOT NULL"
+        ).fetchone()["c"]
+        if analyzed <= 0:
+            return None
+        return self.save_model_run(provider, model, label, created_at, temp_c=None, notes="기존 분석 결과 시드")
+
+    def list_model_runs(self) -> List[Dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM model_runs ORDER BY id DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def get_model_run(self, run_id: int) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute("SELECT * FROM model_runs WHERE id=?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
+    def compare_model_runs(self, run_a: int, run_b: int, disagreement_limit: int = 50) -> Dict[str, Any]:
+        """두 모델 스냅샷을 비교해서 일치율·감정분포 차이·불일치 사례를 계산한다."""
+        meta_a = self.get_model_run(run_a)
+        meta_b = self.get_model_run(run_b)
+        if not meta_a or not meta_b:
+            raise ValueError("존재하지 않는 런 ID 입니다.")
+
+        rows_a = self.conn.execute(
+            "SELECT review_id, sentiment, confidence FROM model_run_results WHERE run_id=?", (run_a,)
+        ).fetchall()
+        rows_b = self.conn.execute(
+            "SELECT review_id, sentiment, confidence FROM model_run_results WHERE run_id=?", (run_b,)
+        ).fetchall()
+        map_a = {r["review_id"]: r for r in rows_a}
+        map_b = {r["review_id"]: r for r in rows_b}
+        common_ids = sorted(set(map_a) & set(map_b))
+
+        def dist(mmap):
+            d = {"positive": 0, "neutral": 0, "negative": 0}
+            confs = []
+            for rid in common_ids:
+                s = mmap[rid]["sentiment"]
+                if s in d:
+                    d[s] += 1
+                if mmap[rid]["confidence"] is not None and s:
+                    confs.append(float(mmap[rid]["confidence"]))
+            total = sum(d.values()) or 1
+            return {
+                "counts": d,
+                "ratios": {k: round(v / total * 100, 1) for k, v in d.items()},
+                "avg_confidence": round(sum(confs) / len(confs), 3) if confs else None,
+            }
+
+        compared = 0
+        agree = 0
+        disagreements = []
+        for rid in common_ids:
+            sa = map_a[rid]["sentiment"]
+            sb = map_b[rid]["sentiment"]
+            if sa is None and sb is None:
+                continue
+            compared += 1
+            if sa == sb:
+                agree += 1
+                continue
+            ca = map_a[rid]["confidence"]
+            cb = map_b[rid]["confidence"]
+            ca_f = float(ca) if ca is not None else 0.0
+            cb_f = float(cb) if cb is not None else 0.0
+            disagreements.append({
+                "review_id": rid, "sentiment_a": sa, "confidence_a": ca,
+                "sentiment_b": sb, "confidence_b": cb, "conf_delta": abs(ca_f - cb_f),
+            })
+
+        disagreements.sort(key=lambda x: -x["conf_delta"])
+        top = disagreements[:disagreement_limit]
+        if top:
+            ids = [d["review_id"] for d in top]
+            q = ",".join("?" * len(ids))
+            info = {
+                r["id"]: r
+                for r in self.conn.execute(
+                    f"SELECT id, product, review_text FROM clean_reviews WHERE id IN ({q})", ids
+                ).fetchall()
+            }
+            for d in top:
+                row = info.get(d["review_id"])
+                if row:
+                    text = row["review_text"] or ""
+                    d["product"] = row["product"]
+                    d["review_excerpt"] = text if len(text) <= 80 else text[:77] + "..."
+
+        return {
+            "run_a": meta_a, "run_b": meta_b,
+            "common_review_count": len(common_ids), "compared_count": compared, "agree_count": agree,
+            "agreement_rate": round(agree / compared * 100, 1) if compared else None,
+            "dist_a": dist(map_a), "dist_b": dist(map_b),
+            "disagreement_total": len(disagreements), "disagreements": top,
+        }
 
     def query_clean(
         self,
@@ -353,6 +487,8 @@ class Database:
         return cur.fetchone()
 
     def list_extractions(self, extraction_type: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+        """[버그 수정용] 최근 추출 결과들을 여러 건 조회한다 — 가장 최근 것이 규칙 기반
+        폴백이어도, 그 이전에 성공한 AI 추출 결과가 있으면 그걸 우선 보여주기 위함."""
         if extraction_type:
             rows = self.conn.execute(
                 "SELECT * FROM extractions WHERE extraction_type=? ORDER BY id DESC LIMIT ?",
@@ -363,158 +499,6 @@ class Database:
                 "SELECT * FROM extractions ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(r) for r in rows]
-
-    # ---------------- model_runs (채점 스냅샷) ----------------
-    def count_model_runs(self) -> int:
-        return self.conn.execute("SELECT COUNT(*) c FROM model_runs").fetchone()["c"]
-
-    def save_model_run(
-        self,
-        provider: str,
-        model: str,
-        label: str,
-        created_at: str,
-        temp_c: Optional[float] = None,
-        notes: Optional[str] = None,
-    ) -> int:
-        """현재 clean_reviews 감정 결과를 스냅샷으로 저장한다."""
-        rows = self.get_all_clean()
-        analyzed = sum(1 for r in rows if r["sentiment"])
-        cur = self.conn.execute(
-            """INSERT INTO model_runs
-               (provider, model, label, created_at, review_count, analyzed_count, temp_c, notes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (provider, model, label, created_at, len(rows), analyzed, temp_c, notes),
-        )
-        run_id = cur.lastrowid
-        self.conn.executemany(
-            """INSERT INTO model_run_results (run_id, review_id, sentiment, confidence)
-               VALUES (?, ?, ?, ?)""",
-            [(run_id, r["id"], r["sentiment"], r["confidence"]) for r in rows],
-        )
-        self.conn.commit()
-        return run_id
-
-    def seed_model_run_if_empty(self, provider: str, model: str, label: str, created_at: str) -> Optional[int]:
-        """model_runs 가 비어 있고 분석된 clean 리뷰가 있으면 시드 스냅샷 1개를 만든다."""
-        if self.count_model_runs() > 0:
-            return None
-        analyzed = self.conn.execute(
-            "SELECT COUNT(*) c FROM clean_reviews WHERE sentiment IS NOT NULL"
-        ).fetchone()["c"]
-        if analyzed <= 0:
-            return None
-        return self.save_model_run(provider, model, label, created_at, temp_c=None, notes="기존 분석 결과 시드")
-
-    def list_model_runs(self) -> List[Dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT * FROM model_runs ORDER BY id DESC"
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def get_model_run(self, run_id: int) -> Optional[Dict[str, Any]]:
-        row = self.conn.execute("SELECT * FROM model_runs WHERE id=?", (run_id,)).fetchone()
-        return dict(row) if row else None
-
-    def delete_model_run(self, run_id: int) -> bool:
-        """스냅샷과 채점 결과를 함께 지운다. 없으면 False."""
-        if self.get_model_run(run_id) is None:
-            return False
-        self.conn.execute("DELETE FROM model_run_results WHERE run_id=?", (run_id,))
-        self.conn.execute("DELETE FROM model_runs WHERE id=?", (run_id,))
-        self.conn.commit()
-        return True
-
-    def compare_model_runs(self, run_a: int, run_b: int, disagreement_limit: int = 50) -> Dict[str, Any]:
-        meta_a = self.get_model_run(run_a)
-        meta_b = self.get_model_run(run_b)
-        if not meta_a or not meta_b:
-            raise ValueError("존재하지 않는 런 ID 입니다.")
-
-        rows_a = self.conn.execute(
-            "SELECT review_id, sentiment, confidence FROM model_run_results WHERE run_id=?",
-            (run_a,),
-        ).fetchall()
-        rows_b = self.conn.execute(
-            "SELECT review_id, sentiment, confidence FROM model_run_results WHERE run_id=?",
-            (run_b,),
-        ).fetchall()
-        map_a = {r["review_id"]: r for r in rows_a}
-        map_b = {r["review_id"]: r for r in rows_b}
-        common_ids = sorted(set(map_a) & set(map_b))
-
-        def dist(mmap):
-            d = {"positive": 0, "neutral": 0, "negative": 0}
-            confs = []
-            for rid in common_ids:
-                s = mmap[rid]["sentiment"]
-                if s in d:
-                    d[s] += 1
-                if mmap[rid]["confidence"] is not None and s:
-                    confs.append(float(mmap[rid]["confidence"]))
-            total = sum(d.values()) or 1
-            return {
-                "counts": d,
-                "ratios": {k: round(v / total * 100, 1) for k, v in d.items()},
-                "avg_confidence": round(sum(confs) / len(confs), 3) if confs else None,
-            }
-
-        compared = 0
-        agree = 0
-        disagreements = []
-        for rid in common_ids:
-            sa = map_a[rid]["sentiment"]
-            sb = map_b[rid]["sentiment"]
-            if sa is None and sb is None:
-                continue
-            compared += 1
-            if sa == sb:
-                agree += 1
-                continue
-            ca = map_a[rid]["confidence"]
-            cb = map_b[rid]["confidence"]
-            ca_f = float(ca) if ca is not None else 0.0
-            cb_f = float(cb) if cb is not None else 0.0
-            disagreements.append({
-                "review_id": rid,
-                "sentiment_a": sa,
-                "confidence_a": ca,
-                "sentiment_b": sb,
-                "confidence_b": cb,
-                "conf_delta": abs(ca_f - cb_f),
-            })
-
-        disagreements.sort(key=lambda x: -x["conf_delta"])
-        # 리뷰 본문/제품 보강
-        top = disagreements[:disagreement_limit]
-        if top:
-            ids = [d["review_id"] for d in top]
-            q = ",".join("?" * len(ids))
-            info = {
-                r["id"]: r
-                for r in self.conn.execute(
-                    f"SELECT id, product, review_text FROM clean_reviews WHERE id IN ({q})", ids
-                ).fetchall()
-            }
-            for d in top:
-                row = info.get(d["review_id"])
-                if row:
-                    text = row["review_text"] or ""
-                    d["product"] = row["product"]
-                    d["review_excerpt"] = text if len(text) <= 80 else text[:77] + "..."
-
-        return {
-            "run_a": meta_a,
-            "run_b": meta_b,
-            "common_review_count": len(common_ids),
-            "compared_count": compared,
-            "agree_count": agree,
-            "agreement_rate": round(agree / compared * 100, 1) if compared else None,
-            "dist_a": dist(map_a),
-            "dist_b": dist(map_b),
-            "disagreement_total": len(disagreements),
-            "disagreements": top,
-        }
 
     def close(self):
         self.conn.close()

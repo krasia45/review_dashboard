@@ -24,16 +24,16 @@ import matplotlib.font_manager as fm
 
 # ── 디자인 토큰 (dashboard.html과 색상을 공유한다) ──────────────────────────
 PALETTE = {
-    "ink": "#12172B",       # 본문/제목 텍스트
-    "muted": "#8A8F98",     # 보조 텍스트, 축 라벨
-    "border": "#E4E7ED",    # 그리드/테두리
+    "ink": "#0F172A",       # 본문/제목 텍스트 (slate-900)
+    "muted": "#64748B",     # 보조 텍스트, 축 라벨 (slate-500)
+    "border": "#E2E8F0",    # 그리드/테두리 (slate-200)
     "surface": "#FFFFFF",
-    "navy": "#1B2340",      # 중립적 데이터 바 색상(1)
-    "accent": "#FF5A3C",    # 시그널 코럴 — 강조/경고용 시그니처 컬러
-    "amber": "#F2A93B",     # 별점/보조 강조
-    "positive": "#1FAF6B",  # 긍정 (에메랄드)
-    "neutral": "#9BA3B4",   # 중립 (슬레이트)
-    "negative": "#E5484D",  # 부정 (레드)
+    "navy": "#1E293B",      # 중립적 데이터 바 색상 (slate-800)
+    "accent": "#4F46E5",    # 시그니처 브랜드 컬러 — 인디고 (강조/경고용)
+    "amber": "#D97706",     # 별점/보조 강조 (amber-600)
+    "positive": "#16A34A",  # 긍정 (green-600)
+    "neutral": "#94A3B8",   # 중립 (slate-400)
+    "negative": "#DC2626",  # 부정 (red-600)
 }
 SENTIMENT_LABELS_KO = {"positive": "긍정", "neutral": "중립", "negative": "부정"}
 
@@ -350,34 +350,34 @@ def chart_language_distribution(db, output_dir, dpi=150):
     return _save(fig, os.path.join(output_dir, "language_distribution.png"), dpi)
 
 
-# ── 6. 감정 점수(1~5) 분포: 가로 막대 차트 ────────────────────────────────
+# ── 6. 감정 점수(1~3) 분포: 가로 막대 차트 ────────────────────────────────
 def chart_sentiment_grade(db, output_dir, dpi=150, threshold=0.75):
-    """confidence까지 반영한 5단계 감정 점수(아주나쁨~아주좋음) 분포를 시각화한다."""
+    """감정(긍정/중립/부정)을 그대로 3단계 점수로 옮긴 분포를 시각화한다."""
     rows = db.get_all_clean()
     counts = {g["score"]: 0 for g in SENTIMENT_GRADES}
     analyzed = 0
     for r in rows:
         if r["sentiment"]:
-            g = sentiment_grade(r["sentiment"], r["confidence"], threshold)
+            g = sentiment_grade(r["sentiment"])
             counts[g["score"]] += 1
             analyzed += 1
 
     if analyzed == 0:
         return None
 
-    ordered = SENTIMENT_GRADES  # score 1(아주나쁨) -> 5(아주좋음)
+    ordered = SENTIMENT_GRADES  # score 1(부정) -> 3(긍정)
     labels = [f"{g['score']}점 · {g['label']}" for g in ordered]
     values = [counts[g["score"]] for g in ordered]
     colors = [g["color"] for g in ordered]
 
-    fig, ax = plt.subplots(figsize=(9, 4.6))
-    bars = ax.barh(labels, values, color=colors, height=0.6)
+    fig, ax = plt.subplots(figsize=(9, 3.6))
+    bars = ax.barh(labels, values, color=colors, height=0.55)
     _label_bars(ax, bars, fmt="{:.0f}건", horizontal=True)
     ax.grid(axis="y", visible=False)
     ax.set_xlabel("리뷰 수")
-    fig.suptitle("감정 점수 분포 (1=아주나쁨 · 5=아주좋음)", x=0.06, y=1.04, ha="left",
+    fig.suptitle("감정 점수 분포 (1=부정 · 2=중립 · 3=긍정)", x=0.06, y=1.06, ha="left",
                  fontsize=14, fontweight="bold", color=PALETTE["ink"])
-    fig.tight_layout(rect=[0, 0, 1, 0.9])
+    fig.tight_layout(rect=[0, 0, 1, 0.86])
     return _save(fig, os.path.join(output_dir, "sentiment_grade.png"), dpi)
 
 

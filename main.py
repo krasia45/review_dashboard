@@ -15,7 +15,6 @@
     python main.py stats
     python main.py extract --sentiment negative
     python main.py dashboard --html
-    python main.py serve --port 8765              # 모델 선택·Spark 온도·재분석 UI 포함 로컬 서버
     python main.py export --format csv --sentiment positive
     python main.py alert --days 7
     python main.py compare
@@ -36,7 +35,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.logger_setup import setup_logger
 from src.db import Database
 from src.ai_client import AIClient
-from src import ingest, cleaner, analyzer, extractor, query, visualizer, reporter, exporter, alerts, compare, ui, envfile, model_runs
+from src import ingest, cleaner, analyzer, extractor, query, visualizer, reporter, exporter, alerts, compare, ui, envfile
+from src import model_runs, model_display
 
 # .env 파일이 있으면 여기서 가장 먼저 읽어둔다 (AIClient 등이 os.environ을 읽기 전에
 # 실행되어야 하므로 import 직후, 다른 어떤 로직보다도 먼저 호출한다).
@@ -128,10 +128,13 @@ def cmd_analyze(db, config, logger, ai_client, target="unanalyzed", review_id=No
             ui.success(f"분석 완료: {result['success']}건 성공")
         else:
             ui.warn(f"분석 완료: {result['success']}건 성공, {result['failed']}건 실패 (logs/app.log 확인)")
-        if result.get("success", 0) > 0:
-            run_id = model_runs.snapshot_after_analyze(db, config, logger, ai_client)
-            if run_id:
-                ui.info(f"모델 스냅샷 저장됨 (run_id={run_id}) — 대시보드 모델 비교에서 확인하세요.")
+        # [보너스: 모델별 비교] 이번 분석 결과를 스냅샷으로 남겨서, 나중에 다른
+        # provider/model로 돌린 결과와 비교할 수 있게 한다 (실패해도 분석 자체는 유효하므로
+        # 스냅샷 저장 실패가 analyze 전체를 실패로 만들지 않는다).
+        try:
+            model_runs.snapshot_after_analyze(db, config, logger, ai_client=ai_client)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"모델 스냅샷 저장 실패(분석 결과 자체는 정상): {e}")
     return result
 
 
@@ -159,10 +162,7 @@ def cmd_dashboard(db, config, logger, fmt="md", html=False, alert_days=None):
     html_path = None
     if html:
         html_path = reporter.build_html_dashboard(db, chart_paths, alert_result, output_dir, threshold=threshold)
-        compare_path = reporter.build_compare_html(output_dir)
-        ui.success(f"대시보드 생성 완료: {saved_path}, {html_path}, {compare_path}")
-    else:
-        ui.success(f"대시보드 생성 완료: {saved_path}")
+    ui.success(f"대시보드 생성 완료: {saved_path}" + (f", {html_path}" if html_path else ""))
     return {"chart_paths": chart_paths, "report_path": saved_path, "html_path": html_path, "alert": alert_result}
 
 
@@ -175,6 +175,62 @@ def cmd_export(db, config, logger, fmt, sentiment=None, rating_min=None, categor
     if path:
         ui.success(f"내보내기 완료: {path}")
     return path
+
+
+def cmd_models_list(db):
+    """[보너스: 모델별 비교] analyze를 돌릴 때마다 자동 저장된 스냅샷 목록을 보여준다."""
+    model_runs.ensure_seed_snapshot(db, {"ai": {"provider": "anthropic"}}, logging.getLogger("review_dashboard"))
+    runs = db.list_model_runs()
+    if not runs:
+        ui.info("아직 저장된 모델 스냅샷이 없습니다. analyze를 한 번 실행하면 자동으로 기록됩니다.")
+        return runs
+    rows = []
+    for r in runs:
+        display_model = model_display.format_model_display(r["model"])
+        temp = f"{r['temp_c']:.1f}℃" if r.get("temp_c") is not None else "-"
+        rows.append([
+            str(r["id"]), r["label"], r["provider"], display_model,
+            f"{r['analyzed_count']}/{r['review_count']}", temp,
+        ])
+    ui.table(["ID", "라벨", "provider", "모델", "분석/전체", "온도"], rows)
+    return runs
+
+
+def cmd_models_compare(db, run_a, run_b):
+    """[보너스: 모델별 비교] 두 스냅샷의 일치율/감정분포/대표 불일치 사례를 콘솔에 출력한다."""
+    try:
+        result = db.compare_model_runs(run_a, run_b)
+    except ValueError as e:
+        ui.error(str(e))
+        return None
+
+    a, b = result["run_a"], result["run_b"]
+    print()
+    print(f"=== 모델 비교: [{a['id']}] {a['label']}  vs  [{b['id']}] {b['label']} ===")
+    print(f"공통 리뷰 {result['common_review_count']}건 중 {result['compared_count']}건 비교")
+    rate = result["agreement_rate"]
+    print(f"일치율: {rate if rate is not None else '-'}%  (일치 {result['agree_count']}건 / 불일치 {result['disagreement_total']}건)")
+    print()
+    for tag, dist in (("A", result["dist_a"]), ("B", result["dist_b"])):
+        c = dist["counts"]
+        avg_conf = dist["avg_confidence"]
+        print(f"[{tag}] 긍정 {c['positive']}({dist['ratios']['positive']}%) · "
+              f"중립 {c['neutral']}({dist['ratios']['neutral']}%) · "
+              f"부정 {c['negative']}({dist['ratios']['negative']}%)  "
+              f"평균신뢰도 {avg_conf if avg_conf is not None else '-'}")
+    if result["disagreements"]:
+        print()
+        print(f"[불일치 상위 {min(10, len(result['disagreements']))}건 — 신뢰도 차이 큰 순]")
+        rows = []
+        for d in result["disagreements"][:10]:
+            excerpt = d.get("review_excerpt", "")
+            rows.append([
+                str(d["review_id"]), d.get("product") or "-",
+                f"{d['sentiment_a']}({d['confidence_a']})", f"{d['sentiment_b']}({d['confidence_b']})",
+                excerpt,
+            ])
+        ui.table(["ID", "제품", "A 결과", "B 결과", "리뷰(발췌)"], rows)
+    return result
 
 
 def cmd_search(db, config, keyword, page=1, page_size=10):
@@ -208,25 +264,19 @@ def cmd_setup():
     ANTHROPIC_API_KEY를 .env 파일에 저장해두면, 다음 실행부터는 매번
     `export ANTHROPIC_API_KEY=...`를 다시 입력하지 않아도 자동으로 적용된다."""
     ui.header("초기 설정 마법사")
-    print("  Claude 키는 Anthropic, Spark 키는 DGX Spark vLLM 호출에 필요합니다.")
-    print("  키가 없으면 해당 provider는 규칙 기반 폴백으로 동작합니다.")
+    print("  Claude API 키를 설정하면 실제 AI 감정분석/키워드추출을 사용할 수 있습니다.")
+    print("  키가 없어도 규칙 기반 폴백으로 전체 기능을 계속 사용할 수 있으니,")
     print("  나중에 설정하고 싶다면 그냥 엔터를 눌러 건너뛰어도 됩니다.")
     print(f"  {ui.dim_text('(입력한 값은 이 터미널 화면에 그대로 표시됩니다)')}\n")
 
     current = os.environ.get("ANTHROPIC_API_KEY", "")
     status = f"설정됨 ({current[:10]}...)" if current else "설정 안 됨"
-    spark_current = os.environ.get("SPARK_API_KEY", "")
-    spark_status = f"설정됨 ({spark_current[:10]}...)" if spark_current else "설정 안 됨"
-    print(f"  Claude 키: {status}")
-    print(f"  Spark 키:  {spark_status}\n")
+    print(f"  현재 상태: {status}\n")
 
     key = ui.ask("ANTHROPIC_API_KEY 입력 (건너뛰려면 엔터)")
-    spark_key = ui.ask("SPARK_API_KEY 입력 (건너뛰려면 엔터)")
     updates = {}
     if key:
         updates["ANTHROPIC_API_KEY"] = key
-    if spark_key:
-        updates["SPARK_API_KEY"] = spark_key
 
     if ui.confirm("중복 리뷰 처리 기본 정책을 upsert(덮어쓰기)로 바꿀까요? (기본은 skip)", default=False):
         _patch_config_dedup_policy("upsert")
@@ -465,10 +515,6 @@ def build_parser():
     sub.add_parser("menu", help="번호로 고르는 대화형 메뉴를 실행한다 (처음 써보신다면 이걸로 시작하세요)")
     sub.add_parser("setup", help="[편의 기능] API 키를 .env 파일에 저장하는 초기 설정 마법사")
 
-    p = sub.add_parser("serve", help="모델 선택·Spark 온도·재분석이 되는 로컬 대시보드 서버를 띄운다")
-    p.add_argument("--host", default="127.0.0.1", help="바인드 주소 (기본: 127.0.0.1)")
-    p.add_argument("--port", type=int, default=8765, help="포트 (기본: 8765)")
-
     p = sub.add_parser("quickstart", help="가져오기~대시보드까지 전체 파이프라인을 한 번에 실행한다")
     p.add_argument("--file", default=None, help="리뷰 파일 경로 (생략 시 자동 탐지)")
     p.add_argument("--dedup", choices=["skip", "upsert"], default=None)
@@ -520,7 +566,7 @@ def build_parser():
     p.add_argument("--date-to", default=None)
     p.add_argument("--product", default=None)
     p.add_argument("--category", default=None)
-    p.add_argument("--language", choices=["ko", "en"], default=None, help="[보너스] 언어 필터")
+    p.add_argument("--language", choices=["ko", "en", "zh"], default=None, help="[보너스] 언어 필터")
     p.add_argument("--page", type=int, default=1)
     p.add_argument("--size", type=int, default=None)
     p.add_argument("--sort", default="id", help="정렬 기준 컬럼 (id, rating, review_date, sentiment, confidence)")
@@ -562,6 +608,12 @@ def build_parser():
     p.add_argument("--by", choices=["product", "category"], default="product", help="비교 기준")
     p.add_argument("--targets", default=None, help="쉼표로 구분한 대상 목록 (미지정 시 전체)")
 
+    sub.add_parser("models", help="[보너스] analyze로 자동 저장된 모델 스냅샷(provider/model별 결과) 목록을 본다")
+
+    p = sub.add_parser("compare-models", help="[보너스] 저장된 두 모델 스냅샷의 일치율/불일치 사례를 비교한다")
+    p.add_argument("--a", type=int, required=True, help="비교할 스냅샷 A의 ID (models로 확인)")
+    p.add_argument("--b", type=int, required=True, help="비교할 스냅샷 B의 ID (models로 확인)")
+
     return parser
 
 
@@ -585,20 +637,6 @@ def main():
 
     if args.command == "setup":
         cmd_setup()
-        return
-
-    if args.command == "serve":
-        from src.dashboard_server import serve as serve_dashboard
-        output_dir = config.get("visualization", {}).get("output_dir", "output")
-        # HTML이 없으면 한 번 생성 시도
-        html_path = os.path.join(output_dir, "dashboard.html")
-        if not os.path.exists(html_path):
-            db = Database(config["storage"]["db_path"])
-            try:
-                cmd_dashboard(db, config, logger, html=True)
-            finally:
-                db.close()
-        serve_dashboard(output_dir, args.config, logger, host=args.host, port=args.port)
         return
 
     db = Database(config["storage"]["db_path"])
@@ -679,6 +717,12 @@ def main():
             targets = args.targets.split(",") if args.targets else None
             results = compare.compare_by(db, logger, by=args.by, targets=targets)
             compare.print_comparison(results, by=args.by)
+
+        elif args.command == "models":
+            cmd_models_list(db)
+
+        elif args.command == "compare-models":
+            cmd_models_compare(db, args.a, args.b)
 
     finally:
         db.close()

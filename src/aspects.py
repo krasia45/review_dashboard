@@ -149,3 +149,25 @@ def aspects_from_json(raw: Optional[str]) -> Dict[str, str]:
         return normalize_aspects(json.loads(raw))
     except (TypeError, json.JSONDecodeError):
         return empty_aspects()
+
+
+# ── [사용자 요청 추가] 측면(상품/배송/응대) 만족도를 5점 만점으로 수치화 ──────────────
+# positive/negative/neutral 3단계 판정에는 신뢰도가 없어서(sentiment_grade처럼 confidence로
+# 세분화할 수 없음), 아주 나쁨/아주 좋음 극단 없이 단순하게 5(좋음)/3(보통)/1(나쁨)로 매핑한다.
+# not_mentioned(언급 안 됨)는 평균 계산에서 제외한다 (0점 취급하면 평균이 왜곡되므로).
+ASPECT_SCORE_MAP = {"positive": 5, "neutral": 3, "negative": 1, "not_mentioned": None}
+
+
+def aspect_score(value: str) -> Optional[int]:
+    """측면 판정값(positive/negative/neutral/not_mentioned) -> 5점 만점 점수(또는 None)."""
+    return ASPECT_SCORE_MAP.get(value)
+
+
+def average_aspect_scores(all_aspects: list) -> Dict[str, Optional[float]]:
+    """여러 리뷰의 aspects 딕셔너리 목록을 받아, 측면별 평균 점수(5점 만점)를 계산한다.
+    해당 측면이 한 번도 언급되지 않았으면 None을 반환한다."""
+    out = {}
+    for aid in ASPECT_IDS:
+        scores = [s for a in all_aspects for s in [aspect_score(a.get(aid, "not_mentioned"))] if s is not None]
+        out[aid] = round(sum(scores) / len(scores), 2) if scores else None
+    return out

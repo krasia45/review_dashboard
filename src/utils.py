@@ -66,32 +66,30 @@ def detect_language(text: str) -> str:
     return "en"
 
 
-# ── 감정 강도 등급 (5단계 점수) ─────────────────────────────────────────
-# 긍정/부정/중립 3분류 + 신뢰도(confidence)를 조합해 "아주나쁨~아주좋음" 5단계 점수로
-# 변환한다. 신뢰도는 "판단이 얼마나 확실한가"이고, 이 등급은 "감정이 얼마나 강한가"로
-# 서로 다른 개념이다. 별도 AI 호출 없이 이미 저장된 sentiment/confidence로 계산한다.
+# ── 감정 점수 (3단계) ──────────────────────────────────────────────────
+# 감정(긍정/부정/중립)을 그대로 3단계 점수로 옮긴다: 부정(1)/중립(2)/긍정(3).
+# 라벨을 "긍정/중립/부정"으로 통일해서, 다른 곳(감정 분류)과 같은 용어를 쓰도록 했다.
+# 실제 기업 대시보드(NPS/CSAT 계열)에서도 감정 점수는 보통 3~5단계보다 훨씬
+# 단순하게 "부정/중립/긍정" 3단계로 보여주는 경우가 많아, 5단계(신뢰도로 세분화)
+# 대신 이 방식으로 통일했다. confidence는 여전히 별도 지표(품질 지표의 평균
+# 신뢰도)로 표시되므로 정보가 사라지는 것은 아니다.
 SENTIMENT_GRADES = [
-    {"score": 1, "label": "아주 나쁨", "color": "#C0392B"},
-    {"score": 2, "label": "나쁨", "color": "#E5484D"},
-    {"score": 3, "label": "보통", "color": "#9BA3B4"},
-    {"score": 4, "label": "좋음", "color": "#5FBF8F"},
-    {"score": 5, "label": "아주 좋음", "color": "#1FAF6B"},
+    {"score": 1, "label": "부정", "color": "#DC2626"},
+    {"score": 2, "label": "중립", "color": "#94A3B8"},
+    {"score": 3, "label": "긍정", "color": "#16A34A"},
 ]
 _GRADE_BY_SCORE = {g["score"]: g for g in SENTIMENT_GRADES}
 
 
-def sentiment_grade(sentiment: Optional[str], confidence: Optional[float], strong_threshold: float = 0.75) -> dict:
-    """(sentiment, confidence) -> {"score": 1~5, "label": str, "color": str}
-    confidence가 strong_threshold(기본 0.75) 이상이면 "아주" 단계, 미만이면 보통 단계로 나눈다.
-    """
-    if not sentiment or sentiment == "neutral":
-        return _GRADE_BY_SCORE[3]
-    conf = confidence if confidence is not None else 0.5
+def sentiment_grade(sentiment: Optional[str], confidence: Optional[float] = None, strong_threshold: float = 0.75) -> dict:
+    """(sentiment) -> {"score": 1~3, "label": str, "color": str}
+    confidence/strong_threshold 인자는 이전 버전과의 호환을 위해 남겨두었으나,
+    3단계로 단순화하면서 등급 계산에는 더 이상 쓰이지 않는다."""
     if sentiment == "positive":
-        return _GRADE_BY_SCORE[5] if conf >= strong_threshold else _GRADE_BY_SCORE[4]
+        return _GRADE_BY_SCORE[3]
     if sentiment == "negative":
-        return _GRADE_BY_SCORE[1] if conf >= strong_threshold else _GRADE_BY_SCORE[2]
-    return _GRADE_BY_SCORE[3]
+        return _GRADE_BY_SCORE[1]
+    return _GRADE_BY_SCORE[2]
 
 
 def now_str() -> str:

@@ -45,18 +45,18 @@ class TestUtils(unittest.TestCase):
         self.assertEqual(detect_language("Great product, fast shipping"), "en")
         self.assertEqual(detect_language("质量很好，物流也很快"), "zh")
 
-    def test_sentiment_grade_maps_sentiment_and_confidence_to_5_levels(self):
-        # 중립은 신뢰도와 무관하게 항상 3점(보통)
-        self.assertEqual(sentiment_grade("neutral", 0.99)["score"], 3)
-        # 긍정 + 높은 신뢰도(>=0.75) -> 5점(아주 좋음)
-        self.assertEqual(sentiment_grade("positive", 0.9)["score"], 5)
-        # 긍정 + 낮은 신뢰도(<0.75) -> 4점(좋음)
-        self.assertEqual(sentiment_grade("positive", 0.6)["score"], 4)
-        # 부정 + 높은 신뢰도 -> 1점(아주 나쁨), 낮은 신뢰도 -> 2점(나쁨)
-        self.assertEqual(sentiment_grade("negative", 0.9)["score"], 1)
-        self.assertEqual(sentiment_grade("negative", 0.6)["score"], 2)
-        # sentiment가 없으면(미분석) 3점으로 안전하게 처리
-        self.assertEqual(sentiment_grade(None, None)["score"], 3)
+    def test_sentiment_grade_maps_sentiment_to_3_levels(self):
+        # 긍정 -> 3점(긍정), 부정 -> 1점(부정), 중립 -> 2점(중립)
+        self.assertEqual(sentiment_grade("positive")["score"], 3)
+        self.assertEqual(sentiment_grade("positive")["label"], "긍정")
+        self.assertEqual(sentiment_grade("negative")["score"], 1)
+        self.assertEqual(sentiment_grade("negative")["label"], "부정")
+        self.assertEqual(sentiment_grade("neutral")["score"], 2)
+        self.assertEqual(sentiment_grade("neutral")["label"], "중립")
+        # confidence는 더 이상 등급 계산에 영향을 주지 않는다 (하위호환용으로만 받음)
+        self.assertEqual(sentiment_grade("positive", 0.99)["score"], sentiment_grade("positive", 0.1)["score"])
+        # sentiment가 없으면(미분석) 중립(2점)으로 안전하게 처리
+        self.assertEqual(sentiment_grade(None, None)["score"], 2)
 
 
 if __name__ == "__main__":
