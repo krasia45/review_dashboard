@@ -2,8 +2,7 @@
 [사용자 요청 추가 기능] 테스트
 -----------------------------
 1) 측면(배송/상품/응대) 만족도 분류 + 5점 만점 수치화
-2) 멀티 프로바이더 AI 클라이언트(Claude/OpenAI/Spark/fallback)가 전부 안전하게 초기화되는지,
-   특히 spark_health_url 기본값이 낯선 외부 주소가 아니라 반드시 localhost인지
+2) 멀티 프로바이더 AI 클라이언트(Claude/OpenAI/Gemini/fallback)가 전부 안전하게 초기화되는지
 3) 모델별 비교(model_runs) — 스냅샷 저장 후 두 스냅샷을 비교했을 때 숫자가 말이 되는지
 
 실행 방법: python -m unittest tests/test_aspects_and_models.py -v (프로젝트 루트에서)
@@ -61,8 +60,7 @@ class TestAspectSatisfaction(unittest.TestCase):
 
 
 class TestMultiProviderAIClient(unittest.TestCase):
-    """4개 provider(anthropic/openai/spark/fallback) 전부 예외 없이 초기화되는지,
-    그리고 spark 관련 기본 접속 주소가 항상 안전한 localhost인지 검증한다."""
+    """3개 provider(anthropic/openai/gemini) + fallback이 전부 예외 없이 초기화되는지 검증한다."""
 
     def setUp(self):
         self.logger = logging.getLogger("test_multiprovider")
@@ -70,10 +68,10 @@ class TestMultiProviderAIClient(unittest.TestCase):
         self.logger.addHandler(logging.NullHandler())
 
     def test_all_providers_initialize_without_crashing(self):
-        for provider in ("anthropic", "openai", "gemini", "spark", "fallback", "무언가이상한값"):
+        for provider in ("anthropic", "openai", "gemini", "fallback", "무언가이상한값"):
             config = {"ai": {"provider": provider}}
             client = AIClient(config, self.logger)
-            self.assertIn(client.provider, ("anthropic", "openai", "gemini", "spark", "fallback"))
+            self.assertIn(client.provider, ("anthropic", "openai", "gemini", "fallback"))
 
     def test_gemini_requires_its_own_key_env(self):
         config = {"ai": {"provider": "gemini"}}
@@ -82,29 +80,13 @@ class TestMultiProviderAIClient(unittest.TestCase):
         self.assertEqual(client.gemini_api_key_env, "GEMINI_API_KEY")
 
     def test_model_id_fits_provider_catches_leftover_model_id(self):
-        # 회귀 테스트: provider를 spark로 바꿨는데 모델 id는 예전 Claude 것이 남아있는
+        # 회귀 테스트: provider를 바꿨는데 모델 id는 예전 것이 그대로 남아있는
         # 실수를 잡아낼 수 있어야 한다.
         from src.ai_client import model_id_fits_provider
-        self.assertFalse(model_id_fits_provider("spark", "claude-haiku-4-5-20251001"))
+        self.assertFalse(model_id_fits_provider("openai", "claude-haiku-4-5-20251001"))
         self.assertTrue(model_id_fits_provider("anthropic", "claude-haiku-4-5-20251001"))
         self.assertTrue(model_id_fits_provider("gemini", "gemini-2.0-flash"))
         self.assertFalse(model_id_fits_provider("gemini", "gpt-4o"))
-
-    def test_spark_default_urls_are_localhost_not_a_stranger_ip(self):
-        # 회귀 테스트: 예전에 spark_health_url 기본값이 낯선 외부 사설 IP로 박혀있던 적이
-        # 있었다. 반드시 127.0.0.1(내 컴퓨터)이 기본값이어야 한다.
-        config = {"ai": {"provider": "spark"}}
-        client = AIClient(config, self.logger)
-        self.assertIn("127.0.0.1", client.spark_health_url)
-        self.assertIn("127.0.0.1", client.base_url)
-        self.assertNotIn("100.114.218.1", client.spark_health_url)
-
-    def test_spark_health_url_can_be_explicitly_overridden(self):
-        # 다른 기기의 모델을 쓰고 싶다면, 사용자가 config.json에 "명시적으로" 지정해야
-        # 한다 (기본값으로 몰래 나가면 안 된다).
-        config = {"ai": {"provider": "spark", "spark_health_url": "http://192.168.0.50:8080/health"}}
-        client = AIClient(config, self.logger)
-        self.assertEqual(client.spark_health_url, "http://192.168.0.50:8080/health")
 
     def test_fallback_sentiment_includes_aspects(self):
         config = {"ai": {"provider": "fallback"}}

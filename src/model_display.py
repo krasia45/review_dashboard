@@ -54,18 +54,12 @@ def format_model_display(name: Optional[str]) -> str:
     return " ".join(merged)
 
 
-def resolve_snapshot_model(
-    provider: str,
-    model_id: str,
-    spark_health: Optional[dict] = None,
-) -> str:
-    """스냅샷/UI에 넣을 표시용 모델명."""
+def resolve_snapshot_model(provider: str, model_id: str, _unused: Optional[dict] = None) -> str:
+    """스냅샷/UI에 넣을 표시용 모델명.
+    (세 번째 인자는 과거 로컬 모델 헬스체크 연동용으로 남겨둔 하위호환 자리로,
+    현재는 쓰이지 않는다.)"""
     p = (provider or "").lower()
     mid = (model_id or "").strip()
-    if p == "spark" and spark_health:
-        health_model = (spark_health.get("model") or "").strip()
-        if health_model:
-            return format_model_display(health_model)
     if p == "fallback":
         return mid or "규칙 기반"
     return format_model_display(mid or "-")

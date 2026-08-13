@@ -16,7 +16,6 @@ def run_label(provider: str, model: str) -> str:
     p = (provider or "unknown").lower()
     m = model or "-"
     names = {
-        "spark": "Spark",
         "openai": "OpenAI",
         "anthropic": "Anthropic",
         "fallback": "규칙 기반",
@@ -39,28 +38,16 @@ def snapshot_after_analyze(db, config: dict, logger, ai_client: Optional[AIClien
     if provider == "fallback":
         model_id = "규칙 기반"
     else:
-        model_id = ai.get("sentiment_model") or ("qwen" if provider == "spark" else "unknown")
+        model_id = ai.get("sentiment_model") or "unknown"
 
-    temp_c = None
-    health = None
-    client = ai_client
-    if provider == "spark":
-        try:
-            client = client or AIClient(config, logger)
-            health = client.spark_device_status()
-            if health.get("ok") and health.get("temp_c") is not None:
-                temp_c = float(health["temp_c"])
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"Spark 온도 기록 실패(스냅샷은 계속): {e}")
-
-    display_model = resolve_snapshot_model(provider, model_id, health)
+    display_model = resolve_snapshot_model(provider, model_id, None)
 
     run_id = db.save_model_run(
         provider=provider,
         model=display_model,
         label=run_label(provider, display_model),
         created_at=now_str(),
-        temp_c=temp_c,
+        temp_c=None,
         notes=None,
     )
     logger.info(
@@ -76,10 +63,9 @@ def ensure_seed_snapshot(db, config: dict, logger) -> Optional[int]:
     if provider == "fallback":
         model_id = "규칙 기반"
     else:
-        model_id = ai.get("sentiment_model") or ("qwen" if provider == "spark" else "기존")
+        model_id = ai.get("sentiment_model") or "기존"
     display_model = resolve_snapshot_model(provider, model_id, None)
     names = {
-        "spark": "Spark",
         "openai": "OpenAI",
         "anthropic": "Anthropic",
         "fallback": "규칙 기반",

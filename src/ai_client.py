@@ -7,16 +7,12 @@ AI API 클라이언트 모듈
   - anthropic (기본값) : Anthropic Claude 공식 REST API
   - openai             : OpenAI 공식 API (OpenAI 호환 /v1/chat/completions)
   - gemini             : Google Gemini (Generative Language API)
-  - spark              : 로컬(또는 사내망) vLLM 등 OpenAI 호환 서버 — 로컬 Qwen 등 검증용
   - fallback           : 규칙 기반만 사용 (API 호출 없음)
 
 - API 키/엔드포인트는 코드에 하드코딩하지 않고 config.json + 환경변수에서 읽는다.
 - provider=fallback 이거나 해당 provider의 키가 없으면 규칙 기반 폴백으로 동작한다.
 - 키가 있는데 호출이 실패하면(크레딧 부족 등) 감정분석은 예외를 던져
   호출부(analyzer)가 해당 건을 스킵한다 (과제 요구사항 "API 실패 시 로깅 후 스킵").
-- spark(로컬 모델) 기본 접속 주소는 반드시 localhost(127.0.0.1)다. 특정 서버 주소를
-  기본값으로 박아두지 않는다 — 다른 기기의 모델을 쓰려면 config.json에서 명시적으로
-  base_url/spark_health_url을 지정해야 한다 (의도치 않게 낯선 네트워크로 나가는 것을 방지).
 """
 import os
 import re
@@ -28,8 +24,6 @@ ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 OPENAI_DEFAULT_BASE = "https://api.openai.com/v1"
 GEMINI_DEFAULT_BASE = "https://generativelanguage.googleapis.com/v1beta"
-SPARK_DEFAULT_BASE = "http://127.0.0.1:8000/v1"
-SPARK_DEFAULT_HEALTH_URL = "http://127.0.0.1:8080/health"
 
 POSITIVE_HINTS = ["좋", "만족", "빠르", "편해", "훌륭", "추천", "예뻐", "친절", "가성비", "great", "good", "happy", "love",
                   # 중국어 긍정 키워드 (다국어 지원 보너스 — 폴백에서도 중국어 리뷰를 구분할 수 있도록)
@@ -42,7 +36,7 @@ NEGATIVE_HINTS = ["불량", "늦", "실망", "안돼", "안됨", "불편", "느�
 
 def model_id_fits_provider(provider: str, model: Optional[str]) -> bool:
     """[품질 안전장치] provider를 바꿨는데 모델 id는 이전 provider 것 그대로 남아있는
-    실수를 조기에 잡아낸다 (예: provider=spark인데 sentiment_model=claude-haiku...)."""
+    실수를 조기에 잡아낸다 (예: provider=openai인데 sentiment_model=claude-haiku...)."""
     m = (model or "").strip().lower()
     p = (provider or "").strip().lower()
     if not m:
@@ -53,10 +47,6 @@ def model_id_fits_provider(provider: str, model: Optional[str]) -> bool:
         return m.startswith("gpt-") or m.startswith(("o1", "o3", "o4", "chatgpt"))
     if p == "gemini":
         return "gemini" in m
-    if p == "spark":
-        if m.startswith(("claude", "gpt-", "o1", "o3", "o4", "chatgpt")) or "gemini" in m:
-            return False
-        return True
     return True
 
 try:
@@ -78,8 +68,6 @@ class AIClient:
         self.openai_api_key = os.environ.get(self.openai_api_key_env, "").strip()
         self.gemini_api_key_env = ai_cfg.get("gemini_api_key_env", "GEMINI_API_KEY")
         self.gemini_api_key = os.environ.get(self.gemini_api_key_env, "").strip()
-        self.spark_api_key_env = ai_cfg.get("spark_api_key_env", "SPARK_API_KEY")
-        self.spark_api_key = os.environ.get(self.spark_api_key_env, "").strip()
 
         self.sentiment_model = ai_cfg.get("sentiment_model", "claude-haiku-4-5-20251001")
         self.extract_model = ai_cfg.get("extract_model", "claude-sonnet-5")
@@ -88,31 +76,12 @@ class AIClient:
         self.timeout = ai_cfg.get("request_timeout_sec", 30)
         self.extract_timeout = ai_cfg.get("extract_timeout_sec", max(self.timeout * 3, 120))
 
-        self.base_url = (ai_cfg.get("base_url") or SPARK_DEFAULT_BASE).rstrip("/")
         self.openai_base_url = (ai_cfg.get("openai_base_url") or OPENAI_DEFAULT_BASE).rstrip("/")
         self.gemini_base_url = (ai_cfg.get("gemini_base_url") or GEMINI_DEFAULT_BASE).rstrip("/")
-        self.enable_thinking = bool(ai_cfg.get("enable_thinking", False))
-        # 기본값은 반드시 내 컴퓨터(127.0.0.1)다. 특정 원격 주소를 기본으로 박아두면
-        # 사용자가 설정을 안 건드려도 낯선 네트워크로 요청이 나가버리는 문제가 생긴다.
-        self.spark_health_url = ai_cfg.get("spark_health_url", SPARK_DEFAULT_HEALTH_URL)
 
         if self.provider == "fallback":
             self.available = False
             self.logger.warning("AI provider=fallback — 규칙 기반 분석만 사용합니다.")
-        elif self.provider == "spark":
-            self.available = bool(self.spark_api_key)
-            if not self.available:
-                self.logger.warning(
-                    f"{self.spark_api_key_env} 환경변수가 설정되지 않았습니다. "
-                    "Spark(로컬 모델) 호출 대신 규칙 기반 폴백 분석기를 사용합니다. "
-                    f"쓰려면 .env 에 {self.spark_api_key_env}=... 를 넣거나 "
-                    f"export {self.spark_api_key_env}=... 후 다시 실행하세요."
-                )
-            else:
-                self.logger.info(
-                    f"AI provider=spark (OpenAI 호환, 로컬) base_url={self.base_url} "
-                    f"model={self.sentiment_model}"
-                )
         elif self.provider == "openai":
             self.available = bool(self.openai_api_key)
             if not self.available:
@@ -141,11 +110,11 @@ class AIClient:
                     f"{self.api_key_env} 환경변수가 설정되지 않았습니다. "
                     "실제 AI 호출 대신 규칙 기반 폴백 분석기를 사용합니다. "
                     f"실제 AI 분석을 사용하려면: export {self.api_key_env}=sk-ant-xxxx "
-                    "(또는 config.json 의 ai.provider 를 spark/openai/gemini/fallback 으로 바꾸세요)."
+                    "(또는 config.json 의 ai.provider 를 openai/gemini/fallback 으로 바꾸세요)."
                 )
 
         # [품질 안전장치] provider는 바꿨는데 모델 id는 이전 provider 것 그대로 남아있는
-        # 실수(예: provider=spark인데 sentiment_model=claude-haiku...)를 조기에 경고한다.
+        # 실수(예: provider=openai인데 sentiment_model=claude-haiku...)를 조기에 경고한다.
         if self.available:
             for label, model_id in (("sentiment_model", self.sentiment_model), ("extract_model", self.extract_model)):
                 if not model_id_fits_provider(self.provider, model_id):
@@ -159,7 +128,7 @@ class AIClient:
                   max_tokens: Optional[int] = None, timeout: Optional[float] = None) -> Optional[str]:
         if not self.available:
             return None
-        if self.provider in ("spark", "openai"):
+        if self.provider == "openai":
             return self._call_openai(model, system, user_prompt, max_tokens=max_tokens, timeout=timeout)
         if self.provider == "gemini":
             return self._call_gemini(model, system, user_prompt, max_tokens=max_tokens, timeout=timeout)
@@ -203,20 +172,13 @@ class AIClient:
             self.logger.error(f"AI API 요청 중 네트워크 오류: {e}")
             return None
 
-    def _openai_compat_base_and_key(self):
-        """(base_url, api_key, env_name) — OpenAI 호환 provider(openai/spark) 공용."""
-        if self.provider == "openai":
-            return self.openai_base_url, self.openai_api_key, self.openai_api_key_env
-        return self.base_url, self.spark_api_key, self.spark_api_key_env
-
     def _call_openai(self, model: str, system: str, user_prompt: str,
                       max_tokens: Optional[int] = None, timeout: Optional[float] = None) -> Optional[str]:
-        """OpenAI / vLLM 등 OpenAI 호환 chat completions (spark=로컬 모델 검증용)."""
-        base_url, key, env_name = self._openai_compat_base_and_key()
-        if not key:
-            self.logger.error(f"{self.provider} 호출에 {env_name} 가 필요합니다.")
+        """OpenAI 공식 chat completions API."""
+        if not self.openai_api_key:
+            self.logger.error(f"openai 호출에 {self.openai_api_key_env} 가 필요합니다.")
             return None
-        headers = {"content-type": "application/json", "authorization": f"Bearer {key}"}
+        headers = {"content-type": "application/json", "authorization": f"Bearer {self.openai_api_key}"}
         payload = {
             "model": model,
             "max_tokens": max_tokens or self.max_tokens,
@@ -226,13 +188,11 @@ class AIClient:
                 {"role": "user", "content": user_prompt},
             ],
         }
-        if self.provider == "spark":
-            payload["chat_template_kwargs"] = {"enable_thinking": self.enable_thinking}
-        url = f"{base_url}/chat/completions"
+        url = f"{self.openai_base_url}/chat/completions"
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=timeout or self.timeout)
             if resp.status_code != 200:
-                self.logger.error(f"{self.provider} API 호출 실패 (status={resp.status_code}): {resp.text[:200]}")
+                self.logger.error(f"openai API 호출 실패 (status={resp.status_code}): {resp.text[:200]}")
                 return None
             data = resp.json()
             choice = (data.get("choices") or [{}])[0]
@@ -244,21 +204,16 @@ class AIClient:
                 )
             msg = choice.get("message") or {}
             content = msg.get("content")
-            if content:
-                return str(content).strip()
-            reasoning = msg.get("reasoning") or msg.get("reasoning_content")
-            if reasoning:
-                return str(reasoning).strip()
-            return None
+            return str(content).strip() if content else None
         except requests.exceptions.Timeout:
             used_timeout = timeout or self.timeout
             self.logger.error(
-                f"{self.provider} API 요청이 {used_timeout}초 안에 끝나지 않아 타임아웃되었습니다 "
+                f"openai API 요청이 {used_timeout}초 안에 끝나지 않아 타임아웃되었습니다 "
                 "(config.json의 request_timeout_sec/extract_timeout_sec를 늘려보세요)."
             )
             return None
         except requests.RequestException as e:
-            self.logger.error(f"{self.provider} API 요청 중 네트워크 오류: {e}")
+            self.logger.error(f"openai API 요청 중 네트워크 오류: {e}")
             return None
 
     def _call_gemini(self, model: str, system: str, user_prompt: str,
@@ -306,28 +261,6 @@ class AIClient:
         except requests.RequestException as e:
             self.logger.error(f"Gemini API 요청 중 네트워크 오류: {e}")
             return None
-
-    def spark_device_status(self) -> dict:
-        """[선택 기능] 로컬 Spark(vLLM) 서버의 health 엔드포인트에서 기기 온도 등을 조회한다.
-        기본 주소가 127.0.0.1이므로, 직접 config.json에 spark_health_url을 다른 기기 주소로
-        명시적으로 지정하지 않는 한 항상 내 컴퓨터에만 접속한다."""
-        try:
-            resp = requests.get(self.spark_health_url, timeout=5)
-            if resp.status_code != 200:
-                return {"ok": False, "error": f"HTTP {resp.status_code}"}
-            data = resp.json()
-            temp = data.get("temp_c")
-            if temp is None:
-                temp = data.get("temperature")
-            if temp is None and isinstance(data.get("gpu"), dict):
-                temp = data["gpu"].get("temp_c") or data["gpu"].get("temperature")
-            try:
-                temp = float(temp) if temp is not None and temp != "" else None
-            except (TypeError, ValueError):
-                temp = None
-            return {"ok": bool(data.get("ok", True)), "temp_c": temp}
-        except requests.RequestException as e:
-            return {"ok": False, "error": str(e)}
 
     @staticmethod
     def _extract_json(text: str) -> Optional[dict]:
